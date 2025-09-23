@@ -3,9 +3,9 @@
 dataset:
   value: "well.WellActiveMatter"
 max_num_time_steps:
-  value: 5
+  value: 10
 time_step_size:
-  value: 2
+  value: 1
 
 # Training parameters
 batch_size:
@@ -35,7 +35,7 @@ max_grad_norm:
 model_name:
   value: "B"
 finetune_from:
-  value: "camlab-ethz/Poseidon-T"
+  value: "camlab-ethz/Poseidon-B"
 replace_embedding_recovery:
   value: true
 

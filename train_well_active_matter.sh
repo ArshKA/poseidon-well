@@ -13,7 +13,7 @@ export WANDB_CACHE_DIR="/data0/arshkon/wandb_cache"
 export WANDB_DIR="/data0/arshkon/wandb"
 
 CONFIG_FILE="/home/arshkon/Projects/poseidon/configs/well_active_matter_training.yaml"
-DATA_PATH="/data0/arshkon/data/the_well/datasets/active_matter_final"
+DATA_PATH="/data0/arshkon/data/the_well/datasets/active_matter"
 CHECKPOINT_PATH="/data0/arshkon/checkpoints/poseidon"
 PRETRAINED_MODEL="camlab-ethz/Poseidon-B"
 
