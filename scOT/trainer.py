@@ -450,9 +450,12 @@ class Trainer(Trainer_):
             self.output_all_steps = True
 
     def _model_forward(self, model, inputs):
-        if self.ar_steps is not None and model.config.use_conditioning:
+        # Handle DataParallel wrapped models
+        model_config = model.module.config if hasattr(model, 'module') else model.config
+        
+        if self.ar_steps is not None and model_config.use_conditioning:
             channel_difference = (
-                model.config.num_channels > model.config.num_out_channels
+                model_config.num_channels > model_config.num_out_channels
             )
             # TODO: if outputs is not a dataclass this will break
             if isinstance(self.ar_steps, int):
@@ -493,7 +496,7 @@ class Trainer(Trainer_):
                                         outputs.output.detach(),
                                         inputs["pixel_values"][
                                             :,
-                                            model.config.num_out_channels :,
+                                            model_config.num_out_channels :,
                                         ],
                                     ],
                                     dim=1,
@@ -565,7 +568,7 @@ class Trainer(Trainer_):
                                         outputs.output.detach(),
                                         inputs["pixel_values"][
                                             :,
-                                            model.config.num_out_channels :,
+                                            model_config.num_out_channels :,
                                         ],
                                     ],
                                     dim=1,

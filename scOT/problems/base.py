@@ -155,6 +155,13 @@ def get_dataset(dataset, **kwargs):
                 default_time_settings = {"max_num_time_steps": 7, "time_step_size": 2}
             kwargs = {**default_time_settings, **kwargs}
             from .reaction_diffusion.allen_cahn import AllenCahn as dset
+    elif "well" in dataset:
+        if "well.WellActiveMatter" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_active_matter import WellActiveMatter as dset
+        else:
+            raise ValueError(f"Unknown dataset {dataset}")
     else:
         raise ValueError(f"Unknown dataset {dataset}")
 

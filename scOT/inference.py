@@ -23,7 +23,7 @@ from transformers.trainer_utils import EvalPrediction
 from scOT.model import ScOT
 from scOT.trainer import TrainingArguments, Trainer
 from scOT.problems.base import get_dataset, BaseTimeDataset
-from scOT.metrics import relative_lp_error, lp_error
+from scOT.metrics import relative_lp_error, lp_error, vrmse, vrmse_per_channel
 
 
 SEED = 0
@@ -106,6 +106,20 @@ def get_trainer(
                 "max_l1_error": max_error,
             }
 
+        def get_vrmse_statistics(errors):
+            median_error = np.median(errors, axis=0)
+            mean_error = np.mean(errors, axis=0)
+            std_error = np.std(errors, axis=0)
+            min_error = np.min(errors, axis=0)
+            max_error = np.max(errors, axis=0)
+            return {
+                "median_vrmse": median_error,
+                "mean_vrmse": mean_error,
+                "std_vrmse": std_error,
+                "min_vrmse": min_error,
+                "max_vrmse": max_error,
+            }
+
         relative_errors = [
             relative_lp_error(
                 eval_preds.predictions[:, channel_list[i] : channel_list[i + 1]],
@@ -125,6 +139,18 @@ def get_trainer(
             for i in range(len(channel_list) - 1)
         ]
 
+        # Calculate VRMSE for each channel
+        vrmse_errors = [
+            vrmse_per_channel(
+                eval_preds.predictions[:, channel_list[i] : channel_list[i + 1]],
+                eval_preds.label_ids[:, channel_list[i] : channel_list[i + 1]],
+            )
+            for i in range(len(channel_list) - 1)
+        ]
+
+        # Calculate overall VRMSE (all channels combined)
+        overall_vrmse_errors = vrmse(eval_preds.predictions, eval_preds.label_ids)
+
         relative_error_statistics = [
             get_relative_statistics(relative_errors[i])
             for i in range(len(channel_list) - 1)
@@ -134,15 +160,30 @@ def get_trainer(
             get_statistics(errors[i]) for i in range(len(channel_list) - 1)
         ]
 
+        vrmse_error_statistics = [
+            get_vrmse_statistics(vrmse_errors[i])
+            for i in range(len(channel_list) - 1)
+        ]
+
+        # Overall VRMSE statistics
+        overall_vrmse_statistics = get_vrmse_statistics(overall_vrmse_errors[:, np.newaxis])
+
         if dataset.output_dim == 1:
             relative_error_statistics = relative_error_statistics[0]
             error_statistics = error_statistics[0]
+            vrmse_error_statistics = vrmse_error_statistics[0]
             if full_data:
                 relative_error_statistics["relative_full_data"] = relative_errors[
                     0
                 ].tolist()
                 error_statistics["full_data"] = errors[0].tolist()
-            return {**relative_error_statistics, **error_statistics}
+                vrmse_error_statistics["vrmse_full_data"] = vrmse_errors[0].tolist()
+            return {
+                **relative_error_statistics, 
+                **error_statistics, 
+                **vrmse_error_statistics,
+                **overall_vrmse_statistics
+            }
         else:
             mean_over_relative_means = np.mean(
                 np.array(
@@ -170,12 +211,27 @@ def get_trainer(
                 axis=0,
             )
 
+            mean_over_vrmse_means = np.mean(
+                np.array([stats["mean_vrmse"] for stats in vrmse_error_statistics]),
+                axis=0,
+            )
+            mean_over_vrmse_medians = np.mean(
+                np.array([stats["median_vrmse"] for stats in vrmse_error_statistics]),
+                axis=0,
+            )
+
             error_statistics_ = {
                 "mean_relative_l1_error": mean_over_relative_means,
                 "mean_over_median_relative_l1_error": mean_over_relative_medians,
                 "mean_l1_error": mean_over_means,
                 "mean_over_median_l1_error": mean_over_medians,
+                "mean_vrmse": mean_over_vrmse_means,
+                "mean_over_median_vrmse": mean_over_vrmse_medians,
             }
+            
+            # Add overall VRMSE statistics with proper prefixes to avoid conflicts
+            for key, value in overall_vrmse_statistics.items():
+                error_statistics_[f"overall_{key}"] = value
             #!! The above is different from train and finetune (here mean_relative_l1_error is mean over medians instead of mean over means)
             for i, stats in enumerate(relative_error_statistics):
                 for key, value in stats.items():
@@ -197,6 +253,15 @@ def get_trainer(
                         error_statistics_[
                             dataset.printable_channel_description[i] + "/" + "full_data"
                         ] = errors[i].tolist()
+            for i, stats in enumerate(vrmse_error_statistics):
+                for key, value in stats.items():
+                    error_statistics_[
+                        dataset.printable_channel_description[i] + "/" + key
+                    ] = value
+                    if full_data:
+                        error_statistics_[
+                            dataset.printable_channel_description[i] + "/" + "vrmse_full_data"
+                        ] = vrmse_errors[i].tolist()
             return error_statistics_
 
     trainer = Trainer(
@@ -783,6 +848,20 @@ if __name__ == "__main__":
                         "max_l1_error": max_error,
                     }
 
+                def get_vrmse_statistics(errors):
+                    median_error = np.median(errors, axis=0)
+                    mean_error = np.mean(errors, axis=0)
+                    std_error = np.std(errors, axis=0)
+                    min_error = np.min(errors, axis=0)
+                    max_error = np.max(errors, axis=0)
+                    return {
+                        "median_vrmse": median_error,
+                        "mean_vrmse": mean_error,
+                        "std_vrmse": std_error,
+                        "min_vrmse": min_error,
+                        "max_vrmse": max_error,
+                    }
+
                 relative_errors = [
                     relative_lp_error(
                         eval_preds.predictions[
@@ -806,6 +885,18 @@ if __name__ == "__main__":
                     for i in range(len(channel_list) - 1)
                 ]
 
+                # Calculate VRMSE for each channel
+                vrmse_errors = [
+                    vrmse_per_channel(
+                        eval_preds.predictions[:, channel_list[i] : channel_list[i + 1]],
+                        eval_preds.label_ids[:, channel_list[i] : channel_list[i + 1]],
+                    )
+                    for i in range(len(channel_list) - 1)
+                ]
+
+                # Calculate overall VRMSE (all channels combined)
+                overall_vrmse_errors = vrmse(eval_preds.predictions, eval_preds.label_ids)
+
                 relative_error_statistics = [
                     get_relative_statistics(relative_errors[i])
                     for i in range(len(channel_list) - 1)
@@ -815,15 +906,30 @@ if __name__ == "__main__":
                     get_statistics(errors[i]) for i in range(len(channel_list) - 1)
                 ]
 
+                vrmse_error_statistics = [
+                    get_vrmse_statistics(vrmse_errors[i])
+                    for i in range(len(channel_list) - 1)
+                ]
+
+                # Overall VRMSE statistics
+                overall_vrmse_statistics = get_vrmse_statistics(overall_vrmse_errors.reshape(-1, 1))
+
                 if dataset.output_dim == 1:
                     relative_error_statistics = relative_error_statistics[0]
                     error_statistics = error_statistics[0]
+                    vrmse_error_statistics = vrmse_error_statistics[0]
                     if params.full_data:
                         relative_error_statistics["relative_full_data"] = (
                             relative_errors[0].tolist()
                         )
                         error_statistics["full_data"] = errors[0].tolist()
-                    return {**relative_error_statistics, **error_statistics}
+                        vrmse_error_statistics["vrmse_full_data"] = vrmse_errors[0].tolist()
+                    return {
+                        **relative_error_statistics, 
+                        **error_statistics, 
+                        **vrmse_error_statistics,
+                        **overall_vrmse_statistics
+                    }
                 else:
                     mean_over_relative_means = np.mean(
                         np.array(
@@ -856,11 +962,24 @@ if __name__ == "__main__":
                         axis=0,
                     )
 
+                    # Calculate mean VRMSE statistics across channels
+                    mean_over_vrmse_means = np.mean(
+                        np.array([stats["mean_vrmse"] for stats in vrmse_error_statistics]),
+                        axis=0,
+                    )
+                    mean_over_vrmse_medians = np.mean(
+                        np.array([stats["median_vrmse"] for stats in vrmse_error_statistics]),
+                        axis=0,
+                    )
+
                     error_statistics_ = {
                         "mean_relative_l1_error": mean_over_relative_means,
                         "mean_over_median_relative_l1_error": mean_over_relative_medians,
                         "mean_l1_error": mean_over_means,
                         "mean_over_median_l1_error": mean_over_medians,
+                        "mean_vrmse": mean_over_vrmse_means,
+                        "mean_over_median_vrmse": mean_over_vrmse_medians,
+                        **overall_vrmse_statistics,
                     }
                     #!! The above is different from train and finetune (here mean_relative_l1_error is mean over medians instead of mean over means)
                     for i, stats in enumerate(relative_error_statistics):
@@ -885,6 +1004,15 @@ if __name__ == "__main__":
                                     + "/"
                                     + "full_data"
                                 ] = errors[i].tolist()
+                    for i, stats in enumerate(vrmse_error_statistics):
+                        for key, value in stats.items():
+                            error_statistics_[
+                                dataset.printable_channel_description[i] + "/" + key
+                            ] = value
+                            if params.full_data:
+                                error_statistics_[
+                                    dataset.printable_channel_description[i] + "/" + "vrmse_full_data"
+                                ] = vrmse_errors[i].tolist()
                     return error_statistics_
 
             data = []
@@ -942,9 +1070,43 @@ if __name__ == "__main__":
                     )
                 )
 
-        if os.path.exists(params.file):
-            df = pd.read_csv(params.file)
-        else:
-            df = pd.DataFrame()
-        df = pd.concat([df, pd.DataFrame(data)], ignore_index=True)
-        df.to_csv(params.file, index=False)
+        # Sanitize metrics to ensure they're serializable by pandas
+        def sanitize_metrics(data_list):
+            sanitized = []
+            for item in data_list:
+                sanitized_item = {}
+                for key, value in item.items():
+                    if isinstance(value, np.ndarray):
+                        # Convert arrays to scalar (take mean if multi-dimensional)
+                        sanitized_item[key] = float(np.mean(value)) if value.size > 0 else 0.0
+                    elif isinstance(value, (np.integer, np.floating)):
+                        sanitized_item[key] = float(value)
+                    else:
+                        sanitized_item[key] = value
+                sanitized.append(sanitized_item)
+            return sanitized
+        
+        sanitized_data = sanitize_metrics(data)
+        
+        import json
+        json_file = params.file.replace('.csv', '.json')
+        
+        try:
+            if os.path.exists(json_file):
+                with open(json_file, 'r') as f:
+                    existing_data = json.load(f)
+            else:
+                existing_data = []
+            
+            existing_data.extend(sanitized_data)
+            
+            with open(json_file, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+            
+            print(f"Results saved to: {json_file}")
+            
+        except Exception as e:
+            print(f"Error saving results: {e}")
+            print("Metrics:")
+            for item in sanitized_data:
+                print(item)

@@ -1,5 +1,6 @@
 import torch
 import h5py
+import netCDF4
 import copy
 from scOT.problems.base import BaseTimeDataset, BaseDataset
 from scOT.problems.fluids.normalization_constants import CONSTANTS
@@ -16,7 +17,7 @@ class Airfoil(BaseDataset):
 
         data_path = self.data_path + "/SE-AF.nc"
         data_path = self._move_to_local_scratch(data_path)
-        self.reader = h5py.File(data_path, "r")
+        self.reader = netCDF4.Dataset(data_path, "r")
 
         self.constants = {
             "mean": 0.92984116,
@@ -31,12 +32,12 @@ class Airfoil(BaseDataset):
     def __getitem__(self, idx):
         i = idx
         inputs = (
-            torch.from_numpy(self.reader["solution"][i + self.start, 0])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, 0])
             .type(torch.float32)
             .reshape(1, self.resolution, self.resolution)
         )
         labels = (
-            torch.from_numpy(self.reader["solution"][i + self.start, 1])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, 1])
             .type(torch.float32)
             .reshape(1, self.resolution, self.resolution)
         )
@@ -65,7 +66,7 @@ class RichtmyerMeshkov(BaseTimeDataset):
 
         data_path = self.data_path + "/CE-RM.nc"
         data_path = self._move_to_local_scratch(data_path)
-        self.reader = h5py.File(data_path, "r")
+        self.reader = netCDF4.Dataset(data_path, "r")
 
         self.constants = {
             "mean": torch.tensor([1.1964245, -7.164812e-06, 2.8968952e-06, 1.5648036])
@@ -89,13 +90,13 @@ class RichtmyerMeshkov(BaseTimeDataset):
         time = t / self.constants["time"]
 
         inputs = (
-            torch.from_numpy(self.reader["solution"][i + self.start, t1, 0:4])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, t1, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
 
         label = (
-            torch.from_numpy(self.reader["solution"][i + self.start, t2, 0:4])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, t2, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
@@ -123,7 +124,7 @@ class RayleighTaylor(BaseTimeDataset):
 
         data_path = self.data_path + "/GCE-RT.nc"
         data_path = self._move_to_local_scratch(data_path)
-        self.reader = h5py.File(data_path, "r")
+        self.reader = netCDF4.Dataset(data_path, "r")
 
         self.constants = {
             "mean": torch.tensor(
@@ -151,23 +152,23 @@ class RayleighTaylor(BaseTimeDataset):
         time = t / self.constants["time"]
 
         inputs = (
-            torch.from_numpy(self.reader["solution"][i + self.start, t1, 0:4])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, t1, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
         label = (
-            torch.from_numpy(self.reader["solution"][i + self.start, t2, 0:4])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, t2, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
 
         g_1 = (
-            torch.from_numpy(self.reader["solution"][i + self.start, t1, 5:6])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, t1, 5:6])
             .type(torch.float32)
             .reshape(1, self.resolution, self.resolution)
         )
         g_2 = (
-            torch.from_numpy(self.reader["solution"][i + self.start, t2, 5:6])
+            torch.from_numpy(self.reader.variables["solution"][i + self.start, t2, 5:6])
             .type(torch.float32)
             .reshape(1, self.resolution, self.resolution)
         )
@@ -201,7 +202,7 @@ class CompressibleBase(BaseTimeDataset):
 
         data_path = self.data_path + file_path
         data_path = self._move_to_local_scratch(data_path)
-        self.reader = h5py.File(data_path, "r")
+        self.reader = netCDF4.Dataset(data_path, "r")
 
         self.constants = copy.deepcopy(CONSTANTS)
 
@@ -223,12 +224,12 @@ class CompressibleBase(BaseTimeDataset):
         time = t / self.constants["time"]
 
         inputs = (
-            torch.from_numpy(self.reader["data"][i + self.start, t1, 0:4])
+            torch.from_numpy(self.reader.variables["data"][i + self.start, t1, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
         label = (
-            torch.from_numpy(self.reader["data"][i + self.start, t2, 0:4])
+            torch.from_numpy(self.reader.variables["data"][i + self.start, t2, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
@@ -241,12 +242,12 @@ class CompressibleBase(BaseTimeDataset):
 
         if self.tracer:
             input_tracer = (
-                torch.from_numpy(self.reader["data"][i + self.start, t1, 4:5])
+                torch.from_numpy(self.reader.variables["data"][i + self.start, t1, 4:5])
                 .type(torch.float32)
                 .reshape(1, self.resolution, self.resolution)
             )
             output_tracer = (
-                torch.from_numpy(self.reader["data"][i + self.start, t2, 4:5])
+                torch.from_numpy(self.reader.variables["data"][i + self.start, t2, 4:5])
                 .type(torch.float32)
                 .reshape(1, self.resolution, self.resolution)
             )
