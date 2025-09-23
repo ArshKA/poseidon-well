@@ -1,0 +1,26 @@
+dataset:
+  value: "fluids.compressible.RichtmyerMeshkov"
+num_trajectories:
+  value: 1030  # Using the train split size from README
+model_name:
+  value: "B"  # Using Base model size
+lr:
+  value: 0.00005
+lr_embedding_recovery:
+  value: 0.0005
+lr_time_embedding:
+  value: 0.0005
+weight_decay:
+  value: 0.000001
+lr_scheduler:
+  value: "cosine"
+warmup_ratio:
+  value: 0.05  # Small warmup for stability
+early_stopping_patience:
+  value: 50   # Reduced for faster training
+num_epochs:
+  value: 100  # Reduced from default for initial training
+batch_size:
+  value: 8    # Reduced batch size for memory efficiency with time-dependent data
+max_grad_norm:
+  value: 1.0  # Reduced gradient clipping for stability
