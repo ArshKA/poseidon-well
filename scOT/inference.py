@@ -403,9 +403,70 @@ def rollout(trainer, dataset, ar_steps=1, output_all_steps=False):
     prediction = trainer.predict(dataset, metric_key_prefix="")
 
     try:
-        return prediction.predictions, prediction.label_ids, prediction.metrics
-    except:
-        return prediction.predictions
+        metrics = prediction.metrics if hasattr(prediction, 'metrics') else {}
+        
+        # Add per-frame VRMSE if we have multi-step predictions
+        if time_involved and ar_steps != 1 and output_all_steps:
+            print(f"Prediction shape: {prediction.predictions.shape}")
+            print(f"Labels shape: {prediction.label_ids.shape}")
+            
+            # Check if we have multiple frames (time dimension)
+            if len(prediction.predictions.shape) > 3:  # (batch, time, channels, height, width)
+                per_frame_vrmse = []
+                per_frame_denorm_vrmse = []
+                num_frames = prediction.predictions.shape[1]
+                
+                for frame in range(num_frames):
+                    try:
+                        # Get predictions for this frame
+                        frame_preds = prediction.predictions[:, frame]  # (batch, channels, height, width)
+                        
+                        # For intermediate frames, we don't have ground truth labels
+                        # So we'll calculate VRMSE relative to the final target
+                        frame_labels = prediction.label_ids  # (batch, channels, height, width) - final target
+                        
+                        # Calculate normalized VRMSE for this frame across all channels
+                        frame_vrmse = vrmse(frame_preds, frame_labels)
+                        per_frame_vrmse.append(float(np.mean(frame_vrmse)))
+                        
+                        if hasattr(actual_dataset, 'denormalize'):
+                            # Debug: print normalization constants
+                            if frame == 0:  # Only print once
+                                constants = actual_dataset.get_normalization_constants()
+                                print(f"Mean shape: {constants['mean'].shape}, values: {constants['mean'].flatten()[:5]}...")
+                                print(f"Std shape: {constants['std'].shape}, values: {constants['std'].flatten()[:5]}...")
+                            
+                            denorm_frame_preds = actual_dataset.denormalize(frame_preds)
+                            denorm_frame_labels = actual_dataset.denormalize(frame_labels)
+                            denorm_frame_vrmse = vrmse(denorm_frame_preds, denorm_frame_labels)
+                            per_frame_denorm_vrmse.append(float(np.mean(denorm_frame_vrmse)))
+                            
+                            # Debug: show a sample of normalized vs denormalized values
+                            if frame == 0:
+                                print(f"Sample normalized pred: {frame_preds[0, 0, 0, 0].item():.6f}")
+                                print(f"Sample denormalized pred: {denorm_frame_preds[0, 0, 0, 0].item():.6f}")
+                        else:
+                            per_frame_denorm_vrmse.append(float(np.mean(frame_vrmse)))  # fallback to normalized
+                        
+                        print(f"Frame {frame+1} VRMSE: {float(np.mean(frame_vrmse)):.4f}, Denorm: {per_frame_denorm_vrmse[-1]:.4f}")
+                    except Exception as e:
+                        print(f"Error calculating frame {frame} VRMSE: {e}")
+                        break
+                
+                if per_frame_vrmse:
+                    metrics[f"per_frame_vrmse"] = per_frame_vrmse
+                    metrics[f"mean_per_frame_vrmse"] = float(np.mean(per_frame_vrmse))
+                    metrics[f"per_frame_denorm_vrmse"] = per_frame_denorm_vrmse
+                    metrics[f"mean_per_frame_denorm_vrmse"] = float(np.mean(per_frame_denorm_vrmse))
+                    print(f"Per-frame VRMSE: {per_frame_vrmse}")
+                    print(f"Per-frame Denorm VRMSE: {per_frame_denorm_vrmse}")
+            else:
+                print("No multi-frame predictions found")
+            
+        return prediction.predictions, prediction.label_ids, metrics
+    except Exception as e:
+        print(f"Error in rollout: {e}")
+        return prediction.predictions, None, {}
 
 
 def get_test_set(
@@ -792,17 +853,22 @@ if __name__ == "__main__":
                 params.final_time,
                 dataset_kwargs,
             )
+            
+            # Use output_all_steps for multi-step AR to get per-frame metrics
+            use_all_steps = isinstance(params.ar_steps, int) and params.ar_steps > 1
+            
             trainer = get_trainer(
                 params.model_path,
                 params.batch_size,
                 dataset,
                 full_data=params.full_data,
+                output_all_steps=use_all_steps,
             )
             _, _, metrics = rollout(
                 trainer,
                 dataset,
                 ar_steps=params.ar_steps,
-                output_all_steps=False,
+                output_all_steps=use_all_steps,
             )
             data = {
                 "dataset": params.dataset,
