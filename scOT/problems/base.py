@@ -160,6 +160,34 @@ def get_dataset(dataset, **kwargs):
             default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
             kwargs = {**default_time_settings, **kwargs}
             from .well.well_active_matter import WellActiveMatter as dset
+        elif "well.WellHelmholtzStaircase" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_helmholtz_staircase import WellHelmholtzStaircase as dset
+        elif "well.WellGrayScottReactionDiffusion" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_gray_scott_reaction_diffusion import WellGrayScottReactionDiffusion as dset
+        elif "well.WellShearFlow" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_shear_flow import WellShearFlow as dset
+        elif "well.WellTurbulentRadiativeLayer2D" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_turbulent_radiative_layer_2d import WellTurbulentRadiativeLayer2D as dset
+        elif "well.WellRayleighBenard" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_rayleigh_benard import WellRayleighBenard as dset
+        elif "well.WellAcousticScatteringMaze" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_acoustic_scattering_maze import WellAcousticScatteringMaze as dset
+        elif "well.WellViscoelasticInstability" in dataset:
+            default_time_settings = {"max_num_time_steps": 5, "time_step_size": 2}
+            kwargs = {**default_time_settings, **kwargs}
+            from .well.well_viscoelastic_instability import WellViscoelasticInstability as dset
         else:
             raise ValueError(f"Unknown dataset {dataset}")
     else:

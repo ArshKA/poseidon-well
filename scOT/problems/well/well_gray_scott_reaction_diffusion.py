@@ -6,14 +6,14 @@ import yaml
 from ..base import BaseTimeDataset
 
 
-class WellActiveMatter(BaseTimeDataset):
-    """Simplified Well Active Matter dataset using assembled NetCDF file."""
+class WellGrayScottReactionDiffusion(BaseTimeDataset):
+    """Well Gray Scott Reaction Diffusion dataset using assembled NetCDF file."""
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Time constraint - we have 81 actual timesteps per trajectory
-        assert self.max_num_time_steps * self.time_step_size <= 81
+        # Time constraint - we have 1001 actual timesteps per trajectory
+        assert self.max_num_time_steps * self.time_step_size <= 1001
         
         # Dataset parameters
         self.N_max = 10000  # Large enough to accommodate all data
@@ -21,10 +21,10 @@ class WellActiveMatter(BaseTimeDataset):
         self.N_test = 200
         
         # Data specifications
-        self.resolution = 256
-        self.input_dim = 11  # 1 (concentration) + 2 (velocity) + 4 (D) + 4 (E)
-        self.output_dim = 11  # Same as input
-        self.label_description = "concentration,velocity_x,velocity_y,D_00,D_01,D_10,D_11,E_00,E_01,E_10,E_11"
+        self.resolution = 128  # 128x128 resolution
+        self.input_dim = 2  # A + B (concentration fields)
+        self.output_dim = 2  # Same as input
+        self.label_description = "[A],[B]"
         
         # Find assembled data file
         self.data_file = self._find_assembled_file()
@@ -45,7 +45,7 @@ class WellActiveMatter(BaseTimeDataset):
         if not os.path.exists(assembled_file):
             raise FileNotFoundError(
                 f"Assembled file not found: {assembled_file}\n"
-                f"Please run: python assemble_well_active_matter.py "
+                f"Please run: python assemble_gray_scott_reaction_diffusion.py "
                 f"--input_dir {self.data_path}/data/{self.which} "
                 f"--output_file {assembled_file}"
             )
@@ -61,7 +61,7 @@ class WellActiveMatter(BaseTimeDataset):
             return {
                 "mean": torch.zeros(self.input_dim, 1, 1),
                 "std": torch.ones(self.input_dim, 1, 1),
-                "time": 20.0
+                "time": 1000.0
             }
         
         with open(stats_file, 'r') as f:
@@ -69,15 +69,13 @@ class WellActiveMatter(BaseTimeDataset):
         
         # Convert to torch tensors with proper shapes for broadcasting
         constants = {
-            "time": 20.0,  # Time goes from 0 to 20
+            "time": 1000.0,  # Time goes from 0 to 1000
         }
         
         # Process each field's normalization
         field_shapes = {
-            'concentration': (1,),  # scalar
-            'velocity': (2,),       # 2D vector
-            'D': (4,),             # flattened 2x2 tensor
-            'E': (4,)              # flattened 2x2 tensor
+            'A': (1,),  # scalar concentration
+            'B': (1,),  # scalar concentration
         }
         
         mean_values = []
@@ -93,16 +91,9 @@ class WellActiveMatter(BaseTimeDataset):
                     mean_values.extend([field_mean] * shape[0])
                     std_values.extend([field_std] * shape[0])
                 else:
-                    # Vector/tensor field
-                    if field in ['D', 'E']:
-                        # Flatten 2x2 tensor stats
-                        flat_mean = np.array(field_mean).flatten()
-                        flat_std = np.array(field_std).flatten()
-                        mean_values.extend(flat_mean.tolist())
-                        std_values.extend(flat_std.tolist())
-                    else:
-                        mean_values.extend(field_mean)
-                        std_values.extend(field_std)
+                    # Vector field
+                    mean_values.extend(field_mean)
+                    std_values.extend(field_std)
             else:
                 # Default normalization for missing fields
                 mean_values.extend([0.0] * shape[0])
@@ -127,7 +118,7 @@ class WellActiveMatter(BaseTimeDataset):
     def __len__(self):
         """Return the total number of time-dependent samples."""
         # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 81 - self.max_num_time_steps * self.time_step_size + 1
+        timesteps_per_sample = 1001 - self.max_num_time_steps * self.time_step_size + 1
         return self.num_trajectories * timesteps_per_sample
     
     def __getitem__(self, idx):
@@ -136,9 +127,9 @@ class WellActiveMatter(BaseTimeDataset):
         i, t, t1, t2 = self._idx_map(idx)
         
         # Map to actual sample and time indices
-        timesteps_per_sample = 81 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i // timesteps_per_sample
-        time_offset = i % timesteps_per_sample
+        timesteps_per_sample = 1001 - self.max_num_time_steps * self.time_step_size + 1
+        sample_idx = i % self.num_trajectories  # Which trajectory
+        time_offset = i // self.num_trajectories  # Which time window within trajectory
         
         # Adjust time indices
         actual_t1 = t1 + time_offset
@@ -147,32 +138,24 @@ class WellActiveMatter(BaseTimeDataset):
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
-                conc_input = dataset.variables['concentration'][sample_idx, actual_t1, :, :]  # (y, x)
-                vel_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]      # (y, x, 2)
-                d_input = dataset.variables['D'][sample_idx, actual_t1, :, :, :]               # (y, x, 4)
-                e_input = dataset.variables['E'][sample_idx, actual_t1, :, :, :]               # (y, x, 4)
+                a_input = dataset.variables['A'][sample_idx, actual_t1, :, :]  # (y, x)
+                b_input = dataset.variables['B'][sample_idx, actual_t1, :, :]  # (y, x)
                 
                 # Load target fields at time actual_t2
-                conc_target = dataset.variables['concentration'][sample_idx, actual_t2, :, :]  # (y, x)
-                vel_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]      # (y, x, 2)
-                d_target = dataset.variables['D'][sample_idx, actual_t2, :, :, :]               # (y, x, 4)
-                e_target = dataset.variables['E'][sample_idx, actual_t2, :, :, :]               # (y, x, 4)
+                a_target = dataset.variables['A'][sample_idx, actual_t2, :, :]  # (y, x)
+                b_target = dataset.variables['B'][sample_idx, actual_t2, :, :]  # (y, x)
                 
-                # Reshape and concatenate inputs: (y, x) -> (1, y, x), (y, x, n) -> (n, y, x)
+                # Reshape and concatenate inputs: (y, x) -> (1, y, x)
                 inputs = torch.cat([
-                    torch.from_numpy(conc_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(vel_input.astype(np.float32)).permute(2, 0, 1),  # (2, y, x)
-                    torch.from_numpy(d_input.astype(np.float32)).permute(2, 0, 1),    # (4, y, x)
-                    torch.from_numpy(e_input.astype(np.float32)).permute(2, 0, 1)     # (4, y, x)
-                ], dim=0)  # (11, y, x)
+                    torch.from_numpy(a_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                    torch.from_numpy(b_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                ], dim=0)  # (2, y, x)
                 
                 # Reshape and concatenate targets
                 labels = torch.cat([
-                    torch.from_numpy(conc_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(vel_target.astype(np.float32)).permute(2, 0, 1),  # (2, y, x)
-                    torch.from_numpy(d_target.astype(np.float32)).permute(2, 0, 1),    # (4, y, x)
-                    torch.from_numpy(e_target.astype(np.float32)).permute(2, 0, 1)     # (4, y, x)
-                ], dim=0)  # (11, y, x)
+                    torch.from_numpy(a_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                    torch.from_numpy(b_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                ], dim=0)  # (2, y, x)
                 
         except Exception as e:
             print(f"Error loading sample {idx}: {e}")
@@ -191,4 +174,38 @@ class WellActiveMatter(BaseTimeDataset):
             "pixel_values": inputs,
             "labels": labels,
             "time": time_normalized
+        }
+    
+    def denormalize(self, data):
+        """
+        Denormalize data back to original scale.
+        
+        Args:
+            data: Tensor or numpy array with shape (batch_size, channels, height, width) or (channels, height, width)
+            
+        Returns:
+            Denormalized data in the same format as input
+        """
+        if isinstance(data, torch.Tensor):
+            mean = self.constants["mean"].to(data.device)
+            std = self.constants["std"].to(data.device)
+            return data * std + mean
+        elif isinstance(data, np.ndarray):
+            mean = self.constants["mean"].cpu().numpy()
+            std = self.constants["std"].cpu().numpy()
+            return data * std + mean
+        else:
+            raise TypeError(f"Unsupported data type: {type(data)}")
+    
+    def get_normalization_constants(self):
+        """
+        Get normalization constants for external use.
+        
+        Returns:
+            Dictionary containing mean and std tensors
+        """
+        return {
+            "mean": self.constants["mean"],
+            "std": self.constants["std"],
+            "time": self.constants["time"]
         }

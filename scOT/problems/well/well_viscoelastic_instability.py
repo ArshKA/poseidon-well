@@ -6,14 +6,14 @@ import yaml
 from ..base import BaseTimeDataset
 
 
-class WellActiveMatter(BaseTimeDataset):
-    """Simplified Well Active Matter dataset using assembled NetCDF file."""
+class WellViscoelasticInstability(BaseTimeDataset):
+    """Well Viscoelastic Instability dataset using assembled NetCDF file."""
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Time constraint - we have 81 actual timesteps per trajectory
-        assert self.max_num_time_steps * self.time_step_size <= 81
+        # Time constraint - we have varying timesteps (20-60) per trajectory, use 60 as max
+        assert self.max_num_time_steps * self.time_step_size <= 60
         
         # Dataset parameters
         self.N_max = 10000  # Large enough to accommodate all data
@@ -21,10 +21,10 @@ class WellActiveMatter(BaseTimeDataset):
         self.N_test = 200
         
         # Data specifications
-        self.resolution = 256
-        self.input_dim = 11  # 1 (concentration) + 2 (velocity) + 4 (D) + 4 (E)
-        self.output_dim = 11  # Same as input
-        self.label_description = "[concentration],[velocity_x,velocity_y],[D_00,D_01,D_10,D_11],[E_00,E_01,E_10,E_11]"
+        self.resolution = 512  # 512x512 resolution
+        self.input_dim = 8  # pressure + c_zz + velocity_x + velocity_y + C_xx + C_xy + C_yx + C_yy
+        self.output_dim = 8  # Same as input
+        self.label_description = "[pressure],[c_zz],[velocity_x],[velocity_y],[C_xx],[C_xy],[C_yx],[C_yy]"
         
         # Find assembled data file
         self.data_file = self._find_assembled_file()
@@ -45,7 +45,7 @@ class WellActiveMatter(BaseTimeDataset):
         if not os.path.exists(assembled_file):
             raise FileNotFoundError(
                 f"Assembled file not found: {assembled_file}\n"
-                f"Please run: python assemble_well_active_matter.py "
+                f"Please run: python assemble_viscoelastic_instability.py "
                 f"--input_dir {self.data_path}/data/{self.which} "
                 f"--output_file {assembled_file}"
             )
@@ -61,7 +61,7 @@ class WellActiveMatter(BaseTimeDataset):
             return {
                 "mean": torch.zeros(self.input_dim, 1, 1),
                 "std": torch.ones(self.input_dim, 1, 1),
-                "time": 20.0
+                "time": 60.0
             }
         
         with open(stats_file, 'r') as f:
@@ -69,15 +69,19 @@ class WellActiveMatter(BaseTimeDataset):
         
         # Convert to torch tensors with proper shapes for broadcasting
         constants = {
-            "time": 20.0,  # Time goes from 0 to 20
+            "time": 60.0,  # Time goes from 0 to 60 (max timesteps)
         }
         
         # Process each field's normalization
         field_shapes = {
-            'concentration': (1,),  # scalar
-            'velocity': (2,),       # 2D vector
-            'D': (4,),             # flattened 2x2 tensor
-            'E': (4,)              # flattened 2x2 tensor
+            'pressure': (1,),    # scalar
+            'c_zz': (1,),        # scalar
+            'velocity_x': (1,),  # scalar
+            'velocity_y': (1,),  # scalar
+            'C_xx': (1,),        # tensor component
+            'C_xy': (1,),        # tensor component
+            'C_yx': (1,),        # tensor component
+            'C_yy': (1,),        # tensor component
         }
         
         mean_values = []
@@ -93,16 +97,9 @@ class WellActiveMatter(BaseTimeDataset):
                     mean_values.extend([field_mean] * shape[0])
                     std_values.extend([field_std] * shape[0])
                 else:
-                    # Vector/tensor field
-                    if field in ['D', 'E']:
-                        # Flatten 2x2 tensor stats
-                        flat_mean = np.array(field_mean).flatten()
-                        flat_std = np.array(field_std).flatten()
-                        mean_values.extend(flat_mean.tolist())
-                        std_values.extend(flat_std.tolist())
-                    else:
-                        mean_values.extend(field_mean)
-                        std_values.extend(field_std)
+                    # Vector field
+                    mean_values.extend(field_mean)
+                    std_values.extend(field_std)
             else:
                 # Default normalization for missing fields
                 mean_values.extend([0.0] * shape[0])
@@ -127,7 +124,7 @@ class WellActiveMatter(BaseTimeDataset):
     def __len__(self):
         """Return the total number of time-dependent samples."""
         # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 81 - self.max_num_time_steps * self.time_step_size + 1
+        timesteps_per_sample = 60 - self.max_num_time_steps * self.time_step_size + 1
         return self.num_trajectories * timesteps_per_sample
     
     def __getitem__(self, idx):
@@ -136,7 +133,7 @@ class WellActiveMatter(BaseTimeDataset):
         i, t, t1, t2 = self._idx_map(idx)
         
         # Map to actual sample and time indices
-        timesteps_per_sample = 81 - self.max_num_time_steps * self.time_step_size + 1
+        timesteps_per_sample = 60 - self.max_num_time_steps * self.time_step_size + 1
         sample_idx = i % self.num_trajectories  # Which trajectory
         time_offset = i // self.num_trajectories  # Which time window within trajectory
         
@@ -147,32 +144,48 @@ class WellActiveMatter(BaseTimeDataset):
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
-                conc_input = dataset.variables['concentration'][sample_idx, actual_t1, :, :]  # (y, x)
-                vel_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]      # (y, x, 2)
-                d_input = dataset.variables['D'][sample_idx, actual_t1, :, :, :]               # (y, x, 4)
-                e_input = dataset.variables['E'][sample_idx, actual_t1, :, :, :]               # (y, x, 4)
+                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]   # (y, x)
+                c_zz_input = dataset.variables['c_zz'][sample_idx, actual_t1, :, :]           # (y, x)
+                vel_x_input = dataset.variables['velocity_x'][sample_idx, actual_t1, :, :]    # (y, x)
+                vel_y_input = dataset.variables['velocity_y'][sample_idx, actual_t1, :, :]    # (y, x)
+                c_xx_input = dataset.variables['C_xx'][sample_idx, actual_t1, :, :]           # (y, x)
+                c_xy_input = dataset.variables['C_xy'][sample_idx, actual_t1, :, :]           # (y, x)
+                c_yx_input = dataset.variables['C_yx'][sample_idx, actual_t1, :, :]           # (y, x)
+                c_yy_input = dataset.variables['C_yy'][sample_idx, actual_t1, :, :]           # (y, x)
                 
                 # Load target fields at time actual_t2
-                conc_target = dataset.variables['concentration'][sample_idx, actual_t2, :, :]  # (y, x)
-                vel_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]      # (y, x, 2)
-                d_target = dataset.variables['D'][sample_idx, actual_t2, :, :, :]               # (y, x, 4)
-                e_target = dataset.variables['E'][sample_idx, actual_t2, :, :, :]               # (y, x, 4)
+                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]   # (y, x)
+                c_zz_target = dataset.variables['c_zz'][sample_idx, actual_t2, :, :]           # (y, x)
+                vel_x_target = dataset.variables['velocity_x'][sample_idx, actual_t2, :, :]    # (y, x)
+                vel_y_target = dataset.variables['velocity_y'][sample_idx, actual_t2, :, :]    # (y, x)
+                c_xx_target = dataset.variables['C_xx'][sample_idx, actual_t2, :, :]           # (y, x)
+                c_xy_target = dataset.variables['C_xy'][sample_idx, actual_t2, :, :]           # (y, x)
+                c_yx_target = dataset.variables['C_yx'][sample_idx, actual_t2, :, :]           # (y, x)
+                c_yy_target = dataset.variables['C_yy'][sample_idx, actual_t2, :, :]           # (y, x)
                 
-                # Reshape and concatenate inputs: (y, x) -> (1, y, x), (y, x, n) -> (n, y, x)
+                # Reshape and concatenate inputs: (y, x) -> (1, y, x)
                 inputs = torch.cat([
-                    torch.from_numpy(conc_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(vel_input.astype(np.float32)).permute(2, 0, 1),  # (2, y, x)
-                    torch.from_numpy(d_input.astype(np.float32)).permute(2, 0, 1),    # (4, y, x)
-                    torch.from_numpy(e_input.astype(np.float32)).permute(2, 0, 1)     # (4, y, x)
-                ], dim=0)  # (11, y, x)
+                    torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                    torch.from_numpy(c_zz_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(vel_x_input.astype(np.float32)).unsqueeze(0),    # (1, y, x)
+                    torch.from_numpy(vel_y_input.astype(np.float32)).unsqueeze(0),    # (1, y, x)
+                    torch.from_numpy(c_xx_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(c_xy_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(c_yx_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(c_yy_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                ], dim=0)  # (8, y, x)
                 
                 # Reshape and concatenate targets
                 labels = torch.cat([
-                    torch.from_numpy(conc_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(vel_target.astype(np.float32)).permute(2, 0, 1),  # (2, y, x)
-                    torch.from_numpy(d_target.astype(np.float32)).permute(2, 0, 1),    # (4, y, x)
-                    torch.from_numpy(e_target.astype(np.float32)).permute(2, 0, 1)     # (4, y, x)
-                ], dim=0)  # (11, y, x)
+                    torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                    torch.from_numpy(c_zz_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(vel_x_target.astype(np.float32)).unsqueeze(0),    # (1, y, x)
+                    torch.from_numpy(vel_y_target.astype(np.float32)).unsqueeze(0),    # (1, y, x)
+                    torch.from_numpy(c_xx_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(c_xy_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(c_yx_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(c_yy_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                ], dim=0)  # (8, y, x)
                 
         except Exception as e:
             print(f"Error loading sample {idx}: {e}")
