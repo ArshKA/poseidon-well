@@ -542,8 +542,6 @@ class Trainer(Trainer_):
                     outputs = model(**inputs)
                     if self.output_all_steps:
                         outputs_.append(outputs.output.detach())
-                    if self.output_all_steps:
-                        outputs_.append(outputs.output.detach())
                         if outputs.hidden_states is not None:
                             hidden_states_.append(outputs.hidden_states)
                         if outputs.attentions is not None:
