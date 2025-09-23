@@ -12,13 +12,11 @@ export WANDB_RUN_NAME="well-active-matter-$(date +%Y%m%d-%H%M%S)"
 export WANDB_CACHE_DIR="/data0/arshkon/wandb_cache"
 export WANDB_DIR="/data0/arshkon/wandb"
 
-# Configuration
 CONFIG_FILE="/home/arshkon/Projects/poseidon/configs/well_active_matter_training.yaml"
 DATA_PATH="/data0/arshkon/data/the_well/datasets/active_matter_final"
 CHECKPOINT_PATH="/data0/arshkon/checkpoints/poseidon"
 PRETRAINED_MODEL="camlab-ethz/Poseidon-B"
 
-# Create checkpoint directory if it doesn't exist
 mkdir -p "$CHECKPOINT_PATH"
 
 echo "Starting Poseidon training on Well Active Matter dataset..."
@@ -27,7 +25,6 @@ echo "Checkpoint Path: $CHECKPOINT_PATH"
 echo "Pretrained Model: $PRETRAINED_MODEL"
 echo ""
 
-# Run the training command
 accelerate launch --num_processes=8 scOT/train.py \
     --config "$CONFIG_FILE" \
     --data_path "$DATA_PATH" \
