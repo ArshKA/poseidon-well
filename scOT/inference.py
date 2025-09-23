@@ -150,6 +150,34 @@ def get_trainer(
 
         # Calculate overall VRMSE (all channels combined)
         overall_vrmse_errors = vrmse(eval_preds.predictions, eval_preds.label_ids)
+        
+        denorm_errors = []
+        denorm_vrmse_errors = []
+        denorm_overall_vrmse_errors = None
+        
+        if hasattr(dataset, 'denormalize'):
+            # Denormalize predictions and labels
+            denorm_predictions = dataset.denormalize(eval_preds.predictions)
+            denorm_labels = dataset.denormalize(eval_preds.label_ids)
+            
+            denorm_errors = [
+                lp_error(
+                    denorm_predictions[:, channel_list[i] : channel_list[i + 1]],
+                    denorm_labels[:, channel_list[i] : channel_list[i + 1]],
+                    p=1,
+                )
+                for i in range(len(channel_list) - 1)
+            ]
+            
+            denorm_vrmse_errors = [
+                vrmse_per_channel(
+                    denorm_predictions[:, channel_list[i] : channel_list[i + 1]],
+                    denorm_labels[:, channel_list[i] : channel_list[i + 1]],
+                )
+                for i in range(len(channel_list) - 1)
+            ]
+            
+            denorm_overall_vrmse_errors = vrmse(denorm_predictions, denorm_labels)
 
         relative_error_statistics = [
             get_relative_statistics(relative_errors[i])
@@ -167,23 +195,60 @@ def get_trainer(
 
         # Overall VRMSE statistics
         overall_vrmse_statistics = get_vrmse_statistics(overall_vrmse_errors[:, np.newaxis])
+        
+        # Calculate denormalized statistics if available
+        denorm_error_statistics = []
+        denorm_vrmse_error_statistics = []
+        denorm_overall_vrmse_statistics = {}
+        
+        if hasattr(dataset, 'denormalize') and len(denorm_errors) > 0:
+            denorm_error_statistics = [
+                get_statistics(denorm_errors[i]) for i in range(len(channel_list) - 1)
+            ]
+            
+            denorm_vrmse_error_statistics = [
+                get_vrmse_statistics(denorm_vrmse_errors[i])
+                for i in range(len(channel_list) - 1)
+            ]
+            
+            # Denormalized overall VRMSE statistics
+            if denorm_overall_vrmse_errors is not None:
+                denorm_overall_vrmse_statistics = get_vrmse_statistics(denorm_overall_vrmse_errors[:, np.newaxis])
 
         if dataset.output_dim == 1:
             relative_error_statistics = relative_error_statistics[0]
             error_statistics = error_statistics[0]
             vrmse_error_statistics = vrmse_error_statistics[0]
-            if full_data:
-                relative_error_statistics["relative_full_data"] = relative_errors[
-                    0
-                ].tolist()
-                error_statistics["full_data"] = errors[0].tolist()
-                vrmse_error_statistics["vrmse_full_data"] = vrmse_errors[0].tolist()
-            return {
+            
+            # Add denormalized statistics for single channel
+            result = {
                 **relative_error_statistics, 
                 **error_statistics, 
                 **vrmse_error_statistics,
                 **overall_vrmse_statistics
             }
+            
+            if hasattr(dataset, 'denormalize') and len(denorm_error_statistics) > 0:
+                denorm_error_stats = denorm_error_statistics[0]
+                denorm_vrmse_stats = denorm_vrmse_error_statistics[0]
+                
+                # Add denormalized metrics with 'denorm_' prefix
+                for key, value in denorm_error_stats.items():
+                    result[f"denorm_{key}"] = value
+                for key, value in denorm_vrmse_stats.items():
+                    result[f"denorm_{key}"] = value
+                for key, value in denorm_overall_vrmse_statistics.items():
+                    result[f"denorm_overall_{key}"] = value
+            
+            if full_data:
+                relative_error_statistics["relative_full_data"] = relative_errors[0].tolist()
+                error_statistics["full_data"] = errors[0].tolist()
+                vrmse_error_statistics["vrmse_full_data"] = vrmse_errors[0].tolist()
+                if hasattr(dataset, 'denormalize') and len(denorm_errors) > 0:
+                    result["denorm_full_data"] = denorm_errors[0].tolist()
+                    result["denorm_vrmse_full_data"] = denorm_vrmse_errors[0].tolist()
+                    
+            return result
         else:
             mean_over_relative_means = np.mean(
                 np.array(
@@ -211,14 +276,15 @@ def get_trainer(
                 axis=0,
             )
 
-            mean_over_vrmse_means = np.mean(
-                np.array([stats["mean_vrmse"] for stats in vrmse_error_statistics]),
-                axis=0,
-            )
-            mean_over_vrmse_medians = np.mean(
-                np.array([stats["median_vrmse"] for stats in vrmse_error_statistics]),
-                axis=0,
-            )
+            # Calculate mean VRMSE statistics across channels - flatten all VRMSE values first
+            all_vrmse_values = []
+            for vrmse_error in vrmse_errors:
+                all_vrmse_values.append(vrmse_error.flatten())  # Flatten to 1D array
+            all_vrmse_flat = np.concatenate(all_vrmse_values, axis=0)  # Combine all VRMSE values
+            
+            # Now calculate statistics on the flattened VRMSE values
+            mean_over_vrmse_means = np.mean(all_vrmse_flat)
+            mean_over_vrmse_medians = np.median(all_vrmse_flat)
 
             error_statistics_ = {
                 "mean_relative_l1_error": mean_over_relative_means,
@@ -262,6 +328,48 @@ def get_trainer(
                         error_statistics_[
                             dataset.printable_channel_description[i] + "/" + "vrmse_full_data"
                         ] = vrmse_errors[i].tolist()
+            
+            # Add denormalized metrics for multi-channel case
+            if hasattr(dataset, 'denormalize') and len(denorm_error_statistics) > 0:
+                # Calculate denormalized aggregate statistics
+                denorm_all_vrmse_values = []
+                for vrmse_error in denorm_vrmse_errors:
+                    denorm_all_vrmse_values.append(vrmse_error.flatten())
+                denorm_all_vrmse_flat = np.concatenate(denorm_all_vrmse_values, axis=0)
+                
+                denorm_mean_over_vrmse_means = np.mean(denorm_all_vrmse_flat)
+                denorm_mean_over_vrmse_medians = np.median(denorm_all_vrmse_flat)
+                
+                # Add denormalized aggregate metrics
+                error_statistics_["denorm_mean_vrmse"] = denorm_mean_over_vrmse_means
+                error_statistics_["denorm_mean_over_median_vrmse"] = denorm_mean_over_vrmse_medians
+                
+                # Add denormalized overall VRMSE statistics
+                for key, value in denorm_overall_vrmse_statistics.items():
+                    error_statistics_[f"denorm_overall_{key}"] = value
+                
+                # Add per-channel denormalized L1 error statistics
+                for i, stats in enumerate(denorm_error_statistics):
+                    for key, value in stats.items():
+                        error_statistics_[
+                            dataset.printable_channel_description[i] + "/" + f"denorm_{key}"
+                        ] = value
+                        if full_data:
+                            error_statistics_[
+                                dataset.printable_channel_description[i] + "/" + "denorm_full_data"
+                            ] = denorm_errors[i].tolist()
+                
+                # Add per-channel denormalized VRMSE statistics
+                for i, stats in enumerate(denorm_vrmse_error_statistics):
+                    for key, value in stats.items():
+                        error_statistics_[
+                            dataset.printable_channel_description[i] + "/" + f"denorm_{key}"
+                        ] = value
+                        if full_data:
+                            error_statistics_[
+                                dataset.printable_channel_description[i] + "/" + "denorm_vrmse_full_data"
+                            ] = denorm_vrmse_errors[i].tolist()
+            
             return error_statistics_
 
     trainer = Trainer(
