@@ -403,12 +403,9 @@ def rollout(trainer, dataset, ar_steps=1, output_all_steps=False):
     prediction = trainer.predict(dataset, metric_key_prefix="")
 
     try:
-        metrics = prediction.metrics if hasattr(prediction, 'metrics') else {}
-        
-        return prediction.predictions, prediction.label_ids, metrics
-    except Exception as e:
-        print(f"Error in rollout: {e}")
-        return prediction.predictions, None, {}
+        return prediction.predictions, prediction.label_ids, prediction.metrics
+    except:
+        return prediction.predictions
 
 
 def get_test_set(
@@ -795,22 +792,17 @@ if __name__ == "__main__":
                 params.final_time,
                 dataset_kwargs,
             )
-            
-            # Use output_all_steps for multi-step AR to get per-frame metrics
-            use_all_steps = isinstance(params.ar_steps, int) and params.ar_steps > 1
-            
             trainer = get_trainer(
                 params.model_path,
                 params.batch_size,
                 dataset,
                 full_data=params.full_data,
-                output_all_steps=use_all_steps,
             )
             _, _, metrics = rollout(
                 trainer,
                 dataset,
                 ar_steps=params.ar_steps,
-                output_all_steps=use_all_steps,
+                output_all_steps=False,
             )
             data = {
                 "dataset": params.dataset,
