@@ -87,10 +87,14 @@ class WellViscoelasticInstability(BaseTimeDataset):
         mean_values = []
         std_values = []
         
+        # Extract mean and std sections from YAML
+        means = stats.get('mean', {})
+        stds = stats.get('std', {})
+        
         for field, shape in field_shapes.items():
-            if field in stats:
-                field_mean = stats[field]['mean']
-                field_std = stats[field]['std']
+            if field in means and field in stds:
+                field_mean = means[field]
+                field_std = stds[field]
                 
                 if isinstance(field_mean, (int, float)):
                     # Scalar field
@@ -102,6 +106,7 @@ class WellViscoelasticInstability(BaseTimeDataset):
                     std_values.extend(field_std)
             else:
                 # Default normalization for missing fields
+                print(f"Warning: No normalization constants found for field '{field}', using defaults")
                 mean_values.extend([0.0] * shape[0])
                 std_values.extend([1.0] * shape[0])
         
