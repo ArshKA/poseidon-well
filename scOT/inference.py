@@ -946,21 +946,6 @@ if __name__ == "__main__":
             )
 
             def compute_metrics(eval_preds):
-                # ### START OF FIX ###
-                # Check for shape mismatch and crop predictions if necessary
-                if eval_preds.predictions.shape[-2:] != eval_preds.label_ids.shape[-2:]:
-                    print("Warning: Prediction and label shapes differ. Cropping predictions...")
-                    # Use a simple center crop assuming labels have the correct original size
-                    h, w = eval_preds.label_ids.shape[-2:]
-                    th, tw = eval_preds.predictions.shape[-2:]
-                    top = (th - h) // 2
-                    left = (tw - w) // 2
-                    # Create a cropped version of predictions
-                    predictions_cropped = eval_preds.predictions[..., top:top+h, left:left+w]
-                    # Create a new EvalPrediction object with the cropped data
-                    eval_preds = EvalPrediction(predictions=predictions_cropped, label_ids=eval_preds.label_ids)
-                # ### END OF FIX ###
-
                 channel_list = dataset.channel_slice_list
 
                 def get_relative_statistics(errors):
