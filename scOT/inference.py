@@ -77,6 +77,13 @@ def get_trainer(
     def compute_metrics(eval_preds):
         if time_involved and output_all_steps:
             return {}
+        
+        if hasattr(dataset, 'remove_padding'):
+            eval_preds = EvalPrediction(
+                predictions=dataset.remove_padding(eval_preds.predictions),
+                label_ids=dataset.remove_padding(eval_preds.label_ids)
+            )
+        
         channel_list = dataset.channel_slice_list
 
         def get_relative_statistics(errors):
@@ -160,6 +167,10 @@ def get_trainer(
             # Denormalize predictions and labels
             denorm_predictions = dataset.denormalize(eval_preds.predictions)
             denorm_labels = dataset.denormalize(eval_preds.label_ids)
+            
+            if hasattr(dataset, 'remove_padding'):
+                denorm_predictions = dataset.remove_padding(denorm_predictions)
+                denorm_labels = dataset.remove_padding(denorm_labels)
             
             denorm_errors = [
                 lp_error(
@@ -946,6 +957,12 @@ if __name__ == "__main__":
             )
 
             def compute_metrics(eval_preds):
+                if hasattr(dataset, 'remove_padding'):
+                    eval_preds = EvalPrediction(
+                        predictions=dataset.remove_padding(eval_preds.predictions),
+                        label_ids=dataset.remove_padding(eval_preds.label_ids)
+                    )
+                
                 channel_list = dataset.channel_slice_list
 
                 def get_relative_statistics(errors):
@@ -1090,15 +1107,17 @@ if __name__ == "__main__":
                         axis=0,
                     )
 
-                    # Calculate mean VRMSE statistics across channels
-                    mean_over_vrmse_means = np.mean(
-                        np.array([stats["mean_vrmse"] for stats in vrmse_error_statistics]),
-                        axis=0,
-                    )
-                    mean_over_vrmse_medians = np.mean(
-                        np.array([stats["median_vrmse"] for stats in vrmse_error_statistics]),
-                        axis=0,
-                    )
+                    # Calculate mean VRMSE statistics across channels - flatten all VRMSE values first
+                    all_vrmse_values = []
+                    for vrmse_error in vrmse_errors:
+                        all_vrmse_values.append(vrmse_error.flatten())  # Flatten each channel's errors to a 1D array
+                    
+                    # Concatenate all flattened arrays into a single large 1D array
+                    all_vrmse_flat = np.concatenate(all_vrmse_values, axis=0)
+                    
+                    # Now, calculate statistics on the combined VRMSE values
+                    mean_over_vrmse_means = np.mean(all_vrmse_flat)
+                    mean_over_vrmse_medians = np.median(all_vrmse_flat)
 
                     error_statistics_ = {
                         "mean_relative_l1_error": mean_over_relative_means,
@@ -1107,8 +1126,10 @@ if __name__ == "__main__":
                         "mean_over_median_l1_error": mean_over_medians,
                         "mean_vrmse": mean_over_vrmse_means,
                         "mean_over_median_vrmse": mean_over_vrmse_medians,
-                        **overall_vrmse_statistics,
                     }
+                    for key, value in overall_vrmse_statistics.items():
+                        error_statistics_[f"overall_{key}"] = value
+
                     #!! The above is different from train and finetune (here mean_relative_l1_error is mean over medians instead of mean over means)
                     for i, stats in enumerate(relative_error_statistics):
                         for key, value in stats.items():
