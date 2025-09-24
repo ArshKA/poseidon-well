@@ -1,0 +1,40 @@
+# Well Rayleigh Benard Training Configuration
+
+dataset:
+  value: "well.WellRayleighBenard"
+max_num_time_steps:
+  value: 10
+time_step_size:
+  value: 1
+
+# Training parameters
+batch_size:
+  value: 4
+lr:
+  value: 0.0001
+lr_embedding_recovery:
+  value: 0.001
+lr_time_embedding:
+  value: 0.001
+weight_decay:
+  value: 0.000001
+lr_scheduler:
+  value: "cosine"
+warmup_ratio:
+  value: 0.05
+early_stopping_patience:
+  value: 50
+num_epochs:
+  value: 50
+num_trajectories:
+  value: 175
+max_grad_norm:
+  value: 1.0
+
+# Model
+model_name:
+  value: "B"
+finetune_from:
+  value: "camlab-ethz/Poseidon-B"
+replace_embedding_recovery:
+  value: true

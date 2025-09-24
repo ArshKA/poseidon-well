@@ -21,8 +21,8 @@ class WellRayleighBenard(BaseTimeDataset):
         self.N_test = 200
         
         # Data specifications
-        self.resolution = (128, 512)  # (height, width)
-        self.input_dim = 4  # buoyancy + pressure + velocity_x + velocity_y
+        self.resolution = (128, 512)  # (height, width) - y, x dimensions
+        self.input_dim = 4  # buoyancy + pressure + velocity(2 components)
         self.output_dim = 4  # Same as input
         self.label_description = "[buoyancy],[pressure],[velocity_x],[velocity_y]"
         
@@ -76,8 +76,7 @@ class WellRayleighBenard(BaseTimeDataset):
         field_shapes = {
             'buoyancy': (1,),    # scalar
             'pressure': (1,),    # scalar
-            'velocity_x': (1,),  # scalar
-            'velocity_y': (1,),  # scalar
+            'velocity': (2,),    # vector with 2 components
         }
         
         mean_values = []
@@ -145,16 +144,24 @@ class WellRayleighBenard(BaseTimeDataset):
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
-                buoyancy_input = dataset.variables['buoyancy'][sample_idx, actual_t1, :, :]   # (y, x)
-                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]   # (y, x)
-                vel_x_input = dataset.variables['velocity_x'][sample_idx, actual_t1, :, :]    # (y, x)
-                vel_y_input = dataset.variables['velocity_y'][sample_idx, actual_t1, :, :]    # (y, x)
+                # Note: our data is stored as (sample, time, x, y) but we need (y, x) for model
+                buoyancy_input = dataset.variables['buoyancy'][sample_idx, actual_t1, :, :].T   # (x, y) -> (y, x)
+                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :].T   # (x, y) -> (y, x)
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]   # (x, y, 2)
                 
                 # Load target fields at time actual_t2
-                buoyancy_target = dataset.variables['buoyancy'][sample_idx, actual_t2, :, :]   # (y, x)
-                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]   # (y, x)
-                vel_x_target = dataset.variables['velocity_x'][sample_idx, actual_t2, :, :]    # (y, x)
-                vel_y_target = dataset.variables['velocity_y'][sample_idx, actual_t2, :, :]    # (y, x)
+                buoyancy_target = dataset.variables['buoyancy'][sample_idx, actual_t2, :, :].T   # (x, y) -> (y, x)
+                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :].T   # (x, y) -> (y, x)
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]   # (x, y, 2)
+                
+                # Transpose velocity to get (y, x, 2) and extract components
+                velocity_input = velocity_input.transpose(1, 0, 2)  # (x, y, 2) -> (y, x, 2)
+                velocity_target = velocity_target.transpose(1, 0, 2)  # (x, y, 2) -> (y, x, 2)
+                
+                vel_x_input = velocity_input[:, :, 0]   # (y, x)
+                vel_y_input = velocity_input[:, :, 1]   # (y, x)
+                vel_x_target = velocity_target[:, :, 0] # (y, x)
+                vel_y_target = velocity_target[:, :, 1] # (y, x)
                 
                 # Reshape and concatenate inputs: (y, x) -> (1, y, x)
                 inputs = torch.cat([
