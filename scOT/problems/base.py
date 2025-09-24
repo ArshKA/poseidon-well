@@ -403,6 +403,23 @@ class BaseTimeDataset(BaseDataset, ABC):
         self.printable_channel_description = descriptors
         self.channel_slice_list = channel_slice_list
 
+    def get_ground_truth_for_rollout(self, idx, ar_steps_list):
+        """
+        For a given linear starting index 'idx', fetches the full sequence 
+        of ground truth labels corresponding to a rollout.
+
+        Args:
+            idx (int): The linear index of the initial condition, corresponding
+                       to what __getitem__ would use.
+            ar_steps_list (list[int]): A list of integer time step sizes 
+                                       for each step of the rollout.
+
+        Returns:
+            torch.Tensor: A tensor of shape (len(ar_steps_list), C, H, W) 
+                          containing the sequence of normalized ground truth labels.
+        """
+        raise NotImplementedError
+
 
 class TimeWrapper(BaseTimeDataset):
     """For time-independent problems to be plugged into time-dependent models."""

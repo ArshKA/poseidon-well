@@ -485,55 +485,6 @@ def get_first_n_inputs(dataset, n):
     return torch.stack(inputs)
 
 
-def get_trajectories(
-    dataset, data_path, ar_steps, initial_time, final_time, dataset_kwargs
-):
-    """
-    Get full trajectories in a dataset. Helper for accumulation error evaluation.
-
-    Args:
-        dataset: str
-            Dataset name.
-        data_path: str
-            Path to data.
-        ar_steps: int or list
-            Number of autoregressive steps to take. A single int n is interpreted as taking n homogeneous steps, a list of ints [j_0, j_1, ...] is interpreted as taking a step of size j_i.
-        initial_time: int
-            Initial time step to start from.
-        final_time: int
-            Final time step to end at.
-        dataset_kwargs: dict
-            Additional arguments for dataset as in scOT.problems.base.get_dataset.
-    """
-    trajectories = []
-    if isinstance(ar_steps, int):
-        delta = (final_time - initial_time) // ar_steps
-        for i in range(ar_steps):
-            dataset_ = get_test_set(
-                dataset,
-                data_path,
-                initial_time + i * delta,
-                initial_time + (i + 1) * delta,
-                dataset_kwargs,
-            )
-            traj_ = []
-            for j in range(len(dataset_)):
-                traj_.append(dataset_[j]["labels"])
-            trajectories.append(torch.stack(traj_))
-    else:
-        running_time = initial_time
-        for i in ar_steps:
-            dataset_ = get_test_set(
-                dataset, data_path, running_time, running_time + i, dataset_kwargs
-            )
-            running_time += i
-            traj_ = []
-            for j in range(len(dataset_)):
-                traj_.append(dataset_[j]["labels"])
-            trajectories.append(torch.stack(traj_))
-    return torch.stack(trajectories, dim=1)
-
-
 def remove_underscore_dict(d):
     return {key[1:] if key.startswith("_") else key: value for key, value in d.items()}
 
@@ -947,14 +898,36 @@ if __name__ == "__main__":
                 ar_steps=params.ar_steps,
                 output_all_steps=True,
             )
-            labels = get_trajectories(
-                params.dataset,
-                params.data_path,
-                params.ar_steps,
-                params.initial_time,
-                params.final_time,
-                dataset_kwargs,
-            )
+            
+            # --- START: SIMPLIFIED, GENERIC, AND CORRECT LABEL GENERATION ---
+            
+            print("Generating correctly aligned ground truth labels via dataset method...")
+
+            # Determine the sequence of time step sizes for the rollout.
+            if isinstance(ar_steps, int):
+                step_delta = (params.final_time - params.initial_time) // ar_steps
+                ar_steps_list = [step_delta] * ar_steps
+            else:
+                ar_steps_list = ar_steps # Assumes ar_steps was already a list of ints
+
+            # Use a list comprehension to call the new method for each initial condition.
+            # This is clean, pythonic, and completely dataset-agnostic.
+            all_labels = [
+                dataset.get_ground_truth_for_rollout(i, ar_steps_list) 
+                for i in range(len(dataset))
+            ]
+            
+            # Stack all samples to create the final labels tensor.
+            labels = torch.stack(all_labels, dim=0)
+            
+            print(f"Generated labels with shape: {labels.shape}")
+            print(f"Predictions have shape: {predictions.shape}")
+
+            # The assertion remains as a critical sanity check.
+            assert predictions.shape == labels.shape, \
+                f"CRITICAL: Mismatch between prediction ({predictions.shape}) and label ({labels.shape}) shapes!"
+            
+            # --- END: SIMPLIFIED LABEL GENERATION ---
 
             def compute_metrics(eval_preds):
                 if hasattr(dataset, 'remove_padding'):

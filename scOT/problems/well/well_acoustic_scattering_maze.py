@@ -229,3 +229,44 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
             "std": self.constants["std"],
             "time": self.constants["time"]
         }
+    
+    def get_ground_truth_for_rollout(self, idx, ar_steps_list):
+        """
+        Implementation of the ground truth rollout fetching for the 
+        WellAcousticScatteringMaze dataset.
+        """
+        # This logic is moved directly from the old inference script.
+        # It correctly maps the linear index to the specific data slice.
+        timesteps_per_trajectory = 202 - self.time_step_size
+        
+        sample_idx = idx // timesteps_per_trajectory
+        time_offset = idx % timesteps_per_trajectory
+        
+        rollout_step_labels = []
+        current_time = time_offset
+        
+        # Open the data file once to fetch all required steps.
+        with netCDF4.Dataset(self.data_file, 'r') as nc_dataset:
+            for step_size in ar_steps_list:
+                target_time = current_time + step_size
+
+                if target_time > 201:
+                    raise IndexError(f"Attempted to read from time index {target_time} which is out of bounds for idx {idx}.")
+
+                # Load data for the target time step.
+                pressure_target = nc_dataset.variables['pressure'][sample_idx, target_time, :, :]
+                velocity_target = nc_dataset.variables['velocity'][sample_idx, target_time, :, :, :]
+                
+                # Replicate the exact same preprocessing as in __getitem__.
+                label_tensor = torch.cat([
+                    torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_target.astype(np.float32)).permute(2, 0, 1)
+                ], dim=0)
+                
+                normalized_label = (label_tensor - self.constants["mean"]) / self.constants["std"]
+                rollout_step_labels.append(normalized_label)
+                
+                current_time = target_time
+        
+        # Return a stacked tensor for this specific initial condition's full rollout.
+        return torch.stack(rollout_step_labels, dim=0)

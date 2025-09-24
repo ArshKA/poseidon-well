@@ -258,3 +258,52 @@ class WellHelmholtzStaircase(BaseTimeDataset):
             "std": self.constants["std"],
             "time": self.constants["time"]
         }
+    
+    def get_ground_truth_for_rollout(self, idx, ar_steps_list):
+        """
+        Implementation of the ground truth rollout fetching for the 
+        WellHelmholtzStaircase dataset.
+        """
+        # This logic is moved directly from the old inference script.
+        # It correctly maps the linear index to the specific data slice.
+        timesteps_per_trajectory = 50 - self.time_step_size
+        
+        sample_idx = idx // timesteps_per_trajectory
+        time_offset = idx % timesteps_per_trajectory
+        
+        rollout_step_labels = []
+        current_time = time_offset
+        
+        # Open the data file once to fetch all required steps.
+        with netCDF4.Dataset(self.data_file, 'r') as nc_dataset:
+            for step_size in ar_steps_list:
+                target_time = current_time + step_size
+
+                if target_time > 49:
+                    raise IndexError(f"Attempted to read from time index {target_time} which is out of bounds for idx {idx}.")
+
+                # Load data for the target time step.
+                pressure_re_target = nc_dataset.variables['pressure_re'][sample_idx, target_time, :, :]
+                pressure_im_target = nc_dataset.variables['pressure_im'][sample_idx, target_time, :, :]
+                
+                # Replicate the exact same preprocessing as in __getitem__.
+                label_tensor = torch.stack([
+                    torch.from_numpy(pressure_re_target.astype(np.float32)),
+                    torch.from_numpy(pressure_im_target.astype(np.float32)),
+                ], dim=0)
+                
+                # Normalize first so padded pixels are exactly 0 afterward
+                normalized_label = (label_tensor - self.constants["mean"]) / self.constants["std"]
+                
+                # Pad to square using zeros in normalized space (same as __getitem__)
+                h, w = normalized_label.shape[-2], normalized_label.shape[-1]
+                if h != w:
+                    pads, _ = self._get_square_pad(h, w)
+                    normalized_label = F.pad(normalized_label, pads, mode='constant', value=0.0)
+                
+                rollout_step_labels.append(normalized_label)
+                
+                current_time = target_time
+        
+        # Return a stacked tensor for this specific initial condition's full rollout.
+        return torch.stack(rollout_step_labels, dim=0)

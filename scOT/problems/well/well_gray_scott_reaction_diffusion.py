@@ -229,3 +229,44 @@ class WellGrayScottReactionDiffusion(BaseTimeDataset):
             "std": self.constants["std"],
             "time": self.constants["time"]
         }
+    
+    def get_ground_truth_for_rollout(self, idx, ar_steps_list):
+        """
+        Implementation of the ground truth rollout fetching for the 
+        WellGrayScottReactionDiffusion dataset.
+        """
+        # This logic is moved directly from the old inference script.
+        # It correctly maps the linear index to the specific data slice.
+        timesteps_per_trajectory = 1001 - self.time_step_size
+        
+        sample_idx = idx // timesteps_per_trajectory
+        time_offset = idx % timesteps_per_trajectory
+        
+        rollout_step_labels = []
+        current_time = time_offset
+        
+        # Open the data file once to fetch all required steps.
+        with netCDF4.Dataset(self.data_file, 'r') as nc_dataset:
+            for step_size in ar_steps_list:
+                target_time = current_time + step_size
+
+                if target_time > 1000:
+                    raise IndexError(f"Attempted to read from time index {target_time} which is out of bounds for idx {idx}.")
+
+                # Load data for the target time step.
+                a_target = nc_dataset.variables['A'][sample_idx, target_time, :, :]
+                b_target = nc_dataset.variables['B'][sample_idx, target_time, :, :]
+                
+                # Replicate the exact same preprocessing as in __getitem__.
+                label_tensor = torch.stack([
+                    torch.from_numpy(a_target.astype(np.float32)),
+                    torch.from_numpy(b_target.astype(np.float32)),
+                ], dim=0)
+                
+                normalized_label = (label_tensor - self.constants["mean"]) / self.constants["std"]
+                rollout_step_labels.append(normalized_label)
+                
+                current_time = target_time
+        
+        # Return a stacked tensor for this specific initial condition's full rollout.
+        return torch.stack(rollout_step_labels, dim=0)
