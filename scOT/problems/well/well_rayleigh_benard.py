@@ -7,8 +7,8 @@ import torch.nn.functional as F  # for padding
 from ..base import BaseTimeDataset
 
 
-class WellShearFlow(BaseTimeDataset):
-    """Well Shear Flow dataset using assembled NetCDF file."""
+class WellRayleighBenard(BaseTimeDataset):
+    """Well Rayleigh Benard dataset using assembled NetCDF file."""
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -22,13 +22,13 @@ class WellShearFlow(BaseTimeDataset):
         self.N_test = 200
         
         # Data specifications
-        self.original_resolution = (256, 512)  # (height, width)
+        self.original_resolution = (128, 512)  # (height, width)
         h0, w0 = self.original_resolution
-        self.resolution = max(h0, w0)  # INT side length (e.g., 512)
+        self.resolution = max(h0, w0)  # INT side length of the square (e.g., 512)
 
-        self.input_dim = 4  # tracer + pressure + velocity_x + velocity_y
+        self.input_dim = 4  # buoyancy + pressure + velocity(2 components)
         self.output_dim = 4  # Same as input
-        self.label_description = "[tracer],[pressure],[velocity_x],[velocity_y]"
+        self.label_description = "[buoyancy],[pressure],[velocity_x],[velocity_y]"
         
         # Find assembled data file
         self.data_file = self._find_assembled_file()
@@ -49,7 +49,7 @@ class WellShearFlow(BaseTimeDataset):
         if not os.path.exists(assembled_file):
             raise FileNotFoundError(
                 f"Assembled file not found: {assembled_file}\n"
-                f"Please run: python assemble_shear_flow.py "
+                f"Please run: python assemble_rayleigh_benard.py "
                 f"--input_dir {self.data_path}/data/{self.which} "
                 f"--output_file {assembled_file}"
             )
@@ -71,21 +71,17 @@ class WellShearFlow(BaseTimeDataset):
         with open(stats_file, 'r') as f:
             stats = yaml.safe_load(f)
         
-        # Convert to torch tensors with proper shapes for broadcasting
         constants = {
             "time": 200.0,  # Time goes from 0 to 200
         }
         
-        # Process each field's normalization
         field_shapes = {
-            'tracer': (1,),      # scalar
-            'pressure': (1,),    # scalar
-            'velocity': (2,),    # vector [x, y]
+            'buoyancy': (1,),
+            'pressure': (1,),
+            'velocity': (2,),
         }
         
-        mean_values = []
-        std_values = []
-        
+        mean_values, std_values = [], []
         means = stats.get('mean', {})
         stds = stats.get('std', {})
         
@@ -93,7 +89,6 @@ class WellShearFlow(BaseTimeDataset):
             if field in means and field in stds:
                 field_mean = means[field]
                 field_std = stds[field]
-                
                 if isinstance(field_mean, (int, float)):
                     mean_values.extend([field_mean] * shape[0])
                     std_values.extend([field_std] * shape[0])
@@ -105,10 +100,8 @@ class WellShearFlow(BaseTimeDataset):
                 mean_values.extend([0.0] * shape[0])
                 std_values.extend([1.0] * shape[0])
         
-        # Convert to tensors with shape (channels, 1, 1) for broadcasting
         constants["mean"] = torch.tensor(mean_values, dtype=torch.float32).reshape(-1, 1, 1)
         constants["std"] = torch.tensor(std_values, dtype=torch.float32).reshape(-1, 1, 1)
-        
         return constants
     
     def _calculate_dataset_size(self):
@@ -123,7 +116,6 @@ class WellShearFlow(BaseTimeDataset):
     
     def __len__(self):
         """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
         timesteps_per_sample = 200 - self.max_num_time_steps * self.time_step_size + 1
         return self.num_trajectories * timesteps_per_sample
 
@@ -131,7 +123,7 @@ class WellShearFlow(BaseTimeDataset):
     def _get_square_pad(h, w):
         """
         Compute symmetric padding (left, right, top, bottom) to make (h, w) square.
-        Returns a pads tuple for F.pad and the resulting square size.
+        Returns: pads tuple for F.pad and the square size.
         """
         size = max(h, w)
         pad_w = size - w
@@ -166,39 +158,44 @@ class WellShearFlow(BaseTimeDataset):
         
         # Map to actual sample and time indices
         timesteps_per_sample = 200 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
+        sample_idx = i % self.num_trajectories
+        time_offset = i // self.num_trajectories
         
-        # Adjust time indices
         actual_t1 = t1 + time_offset
         actual_t2 = t2 + time_offset
         
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
-                # Load input fields at time actual_t1 (already (y, x) in file)
-                tracer_input = dataset.variables['tracer'][sample_idx, actual_t1, :, :]        # (y, x)
-                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]    # (y, x)
-                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :] # (y, x, 2)
-                vel_x_input = velocity_input[:, :, 0]  # (y, x)
-                vel_y_input = velocity_input[:, :, 1]  # (y, x)
-                
+                # Load input fields at time actual_t1
+                # Note: data is stored as (sample, time, x, y) but we need (y, x)
+                buoyancy_input = dataset.variables['buoyancy'][sample_idx, actual_t1, :, :].T
+                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :].T
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]
+
                 # Load target fields at time actual_t2
-                tracer_target = dataset.variables['tracer'][sample_idx, actual_t2, :, :]        # (y, x)
-                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]    # (y, x)
-                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :] # (y, x, 2)
-                vel_x_target = velocity_target[:, :, 0]  # (y, x)
-                vel_y_target = velocity_target[:, :, 1]  # (y, x)
+                buoyancy_target = dataset.variables['buoyancy'][sample_idx, actual_t2, :, :].T
+                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :].T
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]
                 
-                # Stack and convert to (4, y, x)
+                # Transpose velocity to (y, x, 2)
+                velocity_input = velocity_input.transpose(1, 0, 2)
+                velocity_target = velocity_target.transpose(1, 0, 2)
+                
+                vel_x_input = velocity_input[:, :, 0]
+                vel_y_input = velocity_input[:, :, 1]
+                vel_x_target = velocity_target[:, :, 0]
+                vel_y_target = velocity_target[:, :, 1]
+                
+                # Stack to (4, y, x)
                 inputs = torch.cat([
-                    torch.from_numpy(tracer_input.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(buoyancy_input.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(vel_x_input.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(vel_y_input.astype(np.float32)).unsqueeze(0),
                 ], dim=0)
                 
                 labels = torch.cat([
-                    torch.from_numpy(tracer_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(buoyancy_target.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(vel_x_target.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(vel_y_target.astype(np.float32)).unsqueeze(0),
@@ -210,7 +207,7 @@ class WellShearFlow(BaseTimeDataset):
             side = self.resolution
             inputs = torch.zeros(self.input_dim, side, side, dtype=torch.float32)
             labels = torch.zeros(self.input_dim, side, side, dtype=torch.float32)
-            # Normalize time and return early (next normalization is no-op for zeros)
+            # Normalize time and return early (already square, normalized next step will be no-op)
             inputs = (inputs - self.constants["mean"]) / self.constants["std"]
             labels = (labels - self.constants["mean"]) / self.constants["std"]
             time_normalized = t / self.constants["time"]
@@ -220,11 +217,11 @@ class WellShearFlow(BaseTimeDataset):
                 "time": time_normalized
             }
         
-        # Apply normalization first so padded pixels are exactly 0 afterward
+        # Normalize first so padded values are exactly 0 afterward
         inputs = (inputs - self.constants["mean"]) / self.constants["std"]
         labels = (labels - self.constants["mean"]) / self.constants["std"]
-        
-        # Pad to square (channel-wise) using zeros in normalized space
+
+        # Pad to square using zeros (already normalized space)
         h, w = inputs.shape[-2], inputs.shape[-1]
         if h != w:
             pads, _ = self._get_square_pad(h, w)
@@ -235,8 +232,8 @@ class WellShearFlow(BaseTimeDataset):
         time_normalized = t / self.constants["time"]
         
         return {
-            "pixel_values": inputs,  # shape: (C, S, S) where S = self.resolution
-            "labels": labels,        # shape: (C, S, S)
+            "pixel_values": inputs,  # (C, S, S) where S = self.resolution
+            "labels": labels,        # (C, S, S)
             "time": time_normalized
         }
     
