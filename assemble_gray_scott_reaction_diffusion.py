@@ -16,27 +16,27 @@ import numpy as np
 def assemble_gray_scott_data(input_dir, output_file):
     """Assemble all Gray Scott reaction diffusion files into a single NetCDF file."""
     
-    # Get all .nc files
-    pattern = os.path.join(input_dir, "**", "*.nc")
+    # Get all .hdf5 files (which are actually NetCDF4 files)
+    pattern = os.path.join(input_dir, "**", "*.hdf5")
     nc_files = glob.glob(pattern, recursive=True)
     nc_files.sort()
     
     print(f"Found {len(nc_files)} files to assemble")
     
     if not nc_files:
-        raise ValueError(f"No .nc files found in {input_dir}")
+        raise ValueError(f"No .hdf5 files found in {input_dir}")
     
     # Analyze first file to get dimensions
     samples = [0]
     with Dataset(nc_files[0], "r") as first_nc:
-        print(f"Variables in first file: {list(first_nc.variables.keys())}")
-        print(f"Dimensions in first file: {list(first_nc.dimensions.keys())}")
+        print(f"Groups in first file: {list(first_nc.groups.keys())}")
         
-        # Get dimensions
-        n_trajectories = first_nc.dimensions["sample"].size
-        n_timesteps = first_nc.dimensions["time"].size
-        height = first_nc.dimensions["y"].size
-        width = first_nc.dimensions["x"].size
+        # Get dimensions from A field in t0_fields
+        a_var = first_nc.groups['t0_fields'].variables['A']
+        n_trajectories = a_var.shape[0]
+        n_timesteps = a_var.shape[1] 
+        height = a_var.shape[2]  # y dimension
+        width = a_var.shape[3]   # x dimension
         
         samples.append(n_trajectories)
         
@@ -45,7 +45,8 @@ def assemble_gray_scott_data(input_dir, output_file):
     # Count samples from all files
     for nc_file in nc_files[1:]:
         with Dataset(nc_file, "r") as nc:
-            samples.append(nc.dimensions["sample"].size)
+            a_var = nc.groups['t0_fields'].variables['A']
+            samples.append(a_var.shape[0])
     
     total_samples = sum(samples)
     
@@ -82,9 +83,9 @@ def assemble_gray_scott_data(input_dir, output_file):
             print(f"Processing {nc_file} ({i+1}/{len(nc_files)})")
             
             with Dataset(nc_file, "r") as nc:
-                # Read data for each field
-                a_data = nc.variables['A'][:]
-                b_data = nc.variables['B'][:]
+                # Read data from t0_fields group
+                a_data = nc.groups['t0_fields'].variables['A'][:]
+                b_data = nc.groups['t0_fields'].variables['B'][:]
                 
                 # Write to output file
                 start_idx = samples[i]
@@ -114,7 +115,7 @@ def assemble_gray_scott_data(input_dir, output_file):
 def main():
     parser = argparse.ArgumentParser(description="Assemble Well Gray Scott Reaction Diffusion dataset")
     parser.add_argument("--input_dir", type=str, required=True, 
-                       help="Directory containing Gray Scott reaction diffusion .nc files")
+                       help="Directory containing Gray Scott reaction diffusion .hdf5 files")
     parser.add_argument("--output_file", type=str, required=True,
                        help="Output assembled .nc file")
     

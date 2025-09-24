@@ -17,35 +17,36 @@ def assemble_helmholtz_staircase_data(input_dir, output_file):
     """Assemble all Helmholtz staircase files into a single NetCDF file."""
     
     # Get all .nc files
-    pattern = os.path.join(input_dir, "**", "*.nc")
+    pattern = os.path.join(input_dir, "**", "*.hdf5")
     nc_files = glob.glob(pattern, recursive=True)
     nc_files.sort()
     
     print(f"Found {len(nc_files)} files to assemble")
     
     if not nc_files:
-        raise ValueError(f"No .nc files found in {input_dir}")
+        raise ValueError(f"No .hdf5 files found in {input_dir}")
     
     # Analyze first file to get dimensions
     samples = [0]
     with Dataset(nc_files[0], "r") as first_nc:
-        print(f"Variables in first file: {list(first_nc.variables.keys())}")
-        print(f"Dimensions in first file: {list(first_nc.dimensions.keys())}")
+        print(f"Groups in first file: {list(first_nc.groups.keys())}")
         
-        # Get dimensions
-        n_trajectories = first_nc.dimensions["sample"].size
-        n_timesteps = first_nc.dimensions["time"].size
-        height = first_nc.dimensions["y"].size
-        width = first_nc.dimensions["x"].size
+        # Get dimensions from pressure_re field in t0_fields
+        pressure_var = first_nc.groups['t0_fields'].variables['pressure_re']
+        n_trajectories = pressure_var.shape[0]
+        n_timesteps = pressure_var.shape[1] 
+        width = pressure_var.shape[2]   # x dimension (1024)
+        height = pressure_var.shape[3]  # y dimension (256)
         
         samples.append(n_trajectories)
         
-        print(f"File structure: {n_trajectories} trajectories, {n_timesteps} timesteps, {height}x{width} resolution")
+        print(f"File structure: {n_trajectories} trajectories, {n_timesteps} timesteps, {width}x{height} resolution")
     
     # Count samples from all files
     for nc_file in nc_files[1:]:
         with Dataset(nc_file, "r") as nc:
-            samples.append(nc.dimensions["sample"].size)
+            pressure_var = nc.groups['t0_fields'].variables['pressure_re']
+            samples.append(pressure_var.shape[0])
     
     total_samples = sum(samples)
     
@@ -89,9 +90,9 @@ def assemble_helmholtz_staircase_data(input_dir, output_file):
             print(f"Processing {nc_file} ({i+1}/{len(nc_files)})")
             
             with Dataset(nc_file, "r") as nc:
-                # Read data for each field
-                pressure_re_data = nc.variables['pressure_re'][:]
-                pressure_im_data = nc.variables['pressure_im'][:]
+                # Read data from t0_fields group
+                pressure_re_data = nc.groups['t0_fields'].variables['pressure_re'][:]
+                pressure_im_data = nc.groups['t0_fields'].variables['pressure_im'][:]
                 
                 # Combine real and imaginary parts
                 pressure_complex_data = np.stack([pressure_re_data, pressure_im_data], axis=-1)
@@ -126,7 +127,7 @@ def assemble_helmholtz_staircase_data(input_dir, output_file):
 def main():
     parser = argparse.ArgumentParser(description="Assemble Well Helmholtz Staircase dataset")
     parser.add_argument("--input_dir", type=str, required=True, 
-                       help="Directory containing Helmholtz staircase .nc files")
+                       help="Directory containing Helmholtz staircase .hdf5 files")
     parser.add_argument("--output_file", type=str, required=True,
                        help="Output assembled .nc file")
     

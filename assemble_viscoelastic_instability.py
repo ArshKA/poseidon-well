@@ -17,14 +17,14 @@ def assemble_viscoelastic_instability_data(input_dir, output_file):
     """Assemble all viscoelastic instability files into a single NetCDF file."""
     
     # Get all .nc files
-    pattern = os.path.join(input_dir, "**", "*.nc")
+    pattern = os.path.join(input_dir, "**", "*.hdf5")
     nc_files = glob.glob(pattern, recursive=True)
     nc_files.sort()
     
     print(f"Found {len(nc_files)} files to assemble")
     
     if not nc_files:
-        raise ValueError(f"No .nc files found in {input_dir}")
+        raise ValueError(f"No .hdf5 files found in {input_dir}")
     
     # Analyze first file to get dimensions
     samples = [0]
@@ -141,7 +141,7 @@ def assemble_viscoelastic_instability_data(input_dir, output_file):
 def main():
     parser = argparse.ArgumentParser(description="Assemble Well Viscoelastic Instability dataset")
     parser.add_argument("--input_dir", type=str, required=True, 
-                       help="Directory containing viscoelastic instability .nc files")
+                       help="Directory containing viscoelastic instability .hdf5 files")
     parser.add_argument("--output_file", type=str, required=True,
                        help="Output assembled .nc file")
     

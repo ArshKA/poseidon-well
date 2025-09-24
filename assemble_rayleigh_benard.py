@@ -15,36 +15,37 @@ import numpy as np
 def assemble_rayleigh_benard_data(input_dir, output_file):
     """Assemble all Rayleigh Benard files into a single NetCDF file."""
     
-    # Get all .nc files
-    pattern = os.path.join(input_dir, "**", "*.nc")
+    # Get all .hdf5 files (which are actually NetCDF4 files)
+    pattern = os.path.join(input_dir, "**", "*.hdf5")
     nc_files = glob.glob(pattern, recursive=True)
     nc_files.sort()
     
     print(f"Found {len(nc_files)} files to assemble")
     
     if not nc_files:
-        raise ValueError(f"No .nc files found in {input_dir}")
+        raise ValueError(f"No .hdf5 files found in {input_dir}")
     
     # Analyze first file to get dimensions
     samples = [0]
     with Dataset(nc_files[0], "r") as first_nc:
-        print(f"Variables in first file: {list(first_nc.variables.keys())}")
-        print(f"Dimensions in first file: {list(first_nc.dimensions.keys())}")
+        print(f"Groups in first file: {list(first_nc.groups.keys())}")
         
-        # Get dimensions
-        n_trajectories = first_nc.dimensions["sample"].size
-        n_timesteps = first_nc.dimensions["time"].size
-        height = first_nc.dimensions["y"].size
-        width = first_nc.dimensions["x"].size
+        # Get dimensions from buoyancy field in t0_fields
+        buoyancy_var = first_nc.groups['t0_fields'].variables['buoyancy']
+        n_trajectories = buoyancy_var.shape[0]
+        n_timesteps = buoyancy_var.shape[1] 
+        width = buoyancy_var.shape[2]  # x dimension (512)
+        height = buoyancy_var.shape[3]  # y dimension (128)
         
         samples.append(n_trajectories)
         
-        print(f"File structure: {n_trajectories} trajectories, {n_timesteps} timesteps, {height}x{width} resolution")
+        print(f"File structure: {n_trajectories} trajectories, {n_timesteps} timesteps, {width}x{height} resolution")
     
     # Count samples from all files
     for nc_file in nc_files[1:]:
         with Dataset(nc_file, "r") as nc:
-            samples.append(nc.dimensions["sample"].size)
+            buoyancy_var = nc.groups['t0_fields'].variables['buoyancy']
+            samples.append(buoyancy_var.shape[0])
     
     total_samples = sum(samples)
     
@@ -61,30 +62,26 @@ def assemble_rayleigh_benard_data(input_dir, output_file):
         out_nc.createDimension("time", n_timesteps)
         out_nc.createDimension("x", width)
         out_nc.createDimension("y", height)
+        out_nc.createDimension("vector_dim", 2)  # For velocity
         
         # Create variables for each field (ignoring constant fields like Rayleigh, Prandtl)
         print("Creating variables...")
         
-        # Scalar fields: buoyancy, pressure (sample, time, y, x)
+        # Scalar fields: buoyancy, pressure (sample, time, x, y) - note x,y order matches data
         buoyancy_var = out_nc.createVariable(
-            "buoyancy", "f4", ("sample", "time", "y", "x"),
-            chunksizes=(1, 1, height, width)
+            "buoyancy", "f4", ("sample", "time", "x", "y"),
+            chunksizes=(1, 1, width, height)
         )
         
         pressure_var = out_nc.createVariable(
-            "pressure", "f4", ("sample", "time", "y", "x"),
-            chunksizes=(1, 1, height, width)
+            "pressure", "f4", ("sample", "time", "x", "y"),
+            chunksizes=(1, 1, width, height)
         )
         
-        # Vector fields: velocity_x, velocity_y (sample, time, y, x)
-        velocity_x_var = out_nc.createVariable(
-            "velocity_x", "f4", ("sample", "time", "y", "x"),
-            chunksizes=(1, 1, height, width)
-        )
-        
-        velocity_y_var = out_nc.createVariable(
-            "velocity_y", "f4", ("sample", "time", "y", "x"),
-            chunksizes=(1, 1, height, width)
+        # Vector field: velocity (sample, time, x, y, vector_dim)
+        velocity_var = out_nc.createVariable(
+            "velocity", "f4", ("sample", "time", "x", "y", "vector_dim"),
+            chunksizes=(1, 1, width, height, 2)
         )
         
         # Copy data from all files
@@ -92,11 +89,10 @@ def assemble_rayleigh_benard_data(input_dir, output_file):
             print(f"Processing {nc_file} ({i+1}/{len(nc_files)})")
             
             with Dataset(nc_file, "r") as nc:
-                # Read data for each field
-                buoyancy_data = nc.variables['buoyancy'][:]
-                pressure_data = nc.variables['pressure'][:]
-                velocity_x_data = nc.variables['velocity_x'][:]
-                velocity_y_data = nc.variables['velocity_y'][:]
+                # Read data from each group
+                buoyancy_data = nc.groups['t0_fields'].variables['buoyancy'][:]
+                pressure_data = nc.groups['t0_fields'].variables['pressure'][:]
+                velocity_data = nc.groups['t1_fields'].variables['velocity'][:]
                 
                 # Write to output file
                 start_idx = samples[i]
@@ -104,29 +100,28 @@ def assemble_rayleigh_benard_data(input_dir, output_file):
                 
                 buoyancy_var[start_idx:end_idx] = buoyancy_data
                 pressure_var[start_idx:end_idx] = pressure_data
-                velocity_x_var[start_idx:end_idx] = velocity_x_data
-                velocity_y_var[start_idx:end_idx] = velocity_y_data
+                velocity_var[start_idx:end_idx] = velocity_data
         
         # Add metadata
         out_nc.setncattr("description", "Assembled Well Rayleigh Benard dataset")
         out_nc.setncattr("total_samples", total_samples)
         out_nc.setncattr("timesteps", n_timesteps)
-        out_nc.setncattr("spatial_resolution", f"{height}x{width}")
-        out_nc.setncattr("fields", "buoyancy,pressure,velocity_x,velocity_y")
+        out_nc.setncattr("spatial_resolution", f"{width}x{height}")
+        out_nc.setncattr("fields", "buoyancy,pressure,velocity")
         out_nc.setncattr("dataset_name", "rayleigh_benard")
     
     print(f"Successfully assembled data to {output_file}")
     print(f"Final structure:")
     print(f"  - {total_samples} samples")
     print(f"  - {n_timesteps} timesteps")  
-    print(f"  - {height}x{width} spatial resolution")
-    print(f"  - 4 fields: buoyancy, pressure, velocity_x, velocity_y")
+    print(f"  - {width}x{height} spatial resolution")
+    print(f"  - 3 fields: buoyancy, pressure, velocity(2) = 4 channels total")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Assemble Well Rayleigh Benard dataset")
     parser.add_argument("--input_dir", type=str, required=True, 
-                       help="Directory containing Rayleigh Benard .nc files")
+                       help="Directory containing Rayleigh Benard .hdf5 files")
     parser.add_argument("--output_file", type=str, required=True,
                        help="Output assembled .nc file")
     
