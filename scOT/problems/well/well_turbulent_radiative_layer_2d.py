@@ -273,22 +273,4 @@ class WellTurbulentRadiativeLayer2D(BaseTimeDataset):
             "mean": self.constants["mean"],
             "std": self.constants["std"],
             "time": self.constants["time"]
-        }```
-
-### Summary of Key Changes
-
-1.  **Correct Indexing in `__getitem__`**: The fundamental bug is fixed. The logic now correctly translates any linear `idx` into a valid `(sample_idx, time_offset)` pair using the dataset's time dimension of 101 steps.
-    
-    ```python
-    timesteps_per_sample = 101 - self.time_step_size
-    sample_idx = idx // timesteps_per_sample
-    time_offset = idx % timesteps_per_sample
-    actual_t1 = time_offset
-    actual_t2 = time_offset + self.time_step_size
-    ```
-
-2.  **Updated `__len__` Method**: This now accurately calculates the total number of valid samples by multiplying the number of trajectories by the valid start times in each (`101 - self.time_step_size`).
-
-3.  **Correct Time Normalization**: The normalized `time` is now correctly calculated using `actual_t1` in all code paths.
-
-4.  **Optimized Data Loading**: The inefficient manual splitting and concatenation of velocity components has been replaced with a more direct and efficient method using `torch.cat` and a single `.permute()` call.
+        }
