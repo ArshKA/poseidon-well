@@ -75,8 +75,7 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
         # Process each field's normalization
         field_shapes = {
             'pressure': (1,),    # scalar
-            'velocity_x': (1,),  # scalar
-            'velocity_y': (1,),  # scalar
+            'velocity': (2,),    # vector with 2 components (x, y)
         }
         
         mean_values = []
@@ -145,13 +144,17 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
                 pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]   # (y, x)
-                vel_x_input = dataset.variables['velocity_x'][sample_idx, actual_t1, :, :]    # (y, x)
-                vel_y_input = dataset.variables['velocity_y'][sample_idx, actual_t1, :, :]    # (y, x)
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]  # (y, x, 2)
                 
                 # Load target fields at time actual_t2
                 pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]   # (y, x)
-                vel_x_target = dataset.variables['velocity_x'][sample_idx, actual_t2, :, :]    # (y, x)
-                vel_y_target = dataset.variables['velocity_y'][sample_idx, actual_t2, :, :]    # (y, x)
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]  # (y, x, 2)
+                
+                # Extract velocity components
+                vel_x_input = velocity_input[:, :, 0]   # (y, x)
+                vel_y_input = velocity_input[:, :, 1]   # (y, x)
+                vel_x_target = velocity_target[:, :, 0]  # (y, x)
+                vel_y_target = velocity_target[:, :, 1]  # (y, x)
                 
                 # Reshape and concatenate inputs: (y, x) -> (1, y, x)
                 inputs = torch.cat([
