@@ -1430,10 +1430,11 @@ class ScOT(Swinv2PreTrainedModel):
             else:
                 raise ValueError("p must be 1 or 2")
             if self.config.channel_slice_list_normalized_loss is not None:
+                mask = (labels != 0.0).any(dim=1, keepdim=True)  # (B, 1, H, W)
                 loss = torch.mean(
                     torch.stack(
                         [
-                            loss_fn(
+                            (loss_fn(
                                 prediction[
                                     :,
                                     self.config.channel_slice_list_normalized_loss[
@@ -1441,7 +1442,7 @@ class ScOT(Swinv2PreTrainedModel):
                                     ] : self.config.channel_slice_list_normalized_loss[
                                         i + 1
                                     ],
-                                ],
+                                ] * mask,
                                 labels[
                                     :,
                                     self.config.channel_slice_list_normalized_loss[
@@ -1449,7 +1450,8 @@ class ScOT(Swinv2PreTrainedModel):
                                     ] : self.config.channel_slice_list_normalized_loss[
                                         i + 1
                                     ],
-                                ],
+                                ] * mask,
+                            ) / mask.float().mean()
                             )
                             / (
                                 loss_fn(
@@ -1481,7 +1483,11 @@ class ScOT(Swinv2PreTrainedModel):
                     )
                 )
             else:
-                loss = loss_fn(prediction, labels)
+                mask = (labels != 0.0).any(dim=1, keepdim=True)  # (B, 1, H, W)
+                if mask.any():
+                    loss = loss_fn(prediction * mask, labels * mask) / mask.float().mean()
+                else:
+                    loss = loss_fn(prediction, labels)
 
         if not return_dict:
             output = (prediction,) + decoder_output[1:] + encoder_outputs[1:]

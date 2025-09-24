@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import netCDF4
 import yaml
+import torch.nn.functional as F  # for padding
 from ..base import BaseTimeDataset
 
 
@@ -21,7 +22,10 @@ class WellHelmholtzStaircase(BaseTimeDataset):
         self.N_test = 200
         
         # Data specifications
-        self.resolution = (256, 1024)  # (height, width)
+        self.original_resolution = (256, 1024)  # (height, width)
+        h0, w0 = self.original_resolution
+        self.resolution = max(h0, w0)  # INT side length of the square (e.g., 1024)
+
         self.input_dim = 2  # pressure_re + pressure_im
         self.output_dim = 2  # Same as input
         self.label_description = "[pressure_re],[pressure_im]"
@@ -67,21 +71,16 @@ class WellHelmholtzStaircase(BaseTimeDataset):
         with open(stats_file, 'r') as f:
             stats = yaml.safe_load(f)
         
-        # Convert to torch tensors with proper shapes for broadcasting
         constants = {
             "time": 50.0,  # Time goes from 0 to 50
         }
         
-        # Process each field's normalization
         field_shapes = {
             'pressure_re': (1,),  # scalar
             'pressure_im': (1,),  # scalar
         }
         
-        mean_values = []
-        std_values = []
-        
-        # Extract mean and std sections from YAML
+        mean_values, std_values = [], []
         means = stats.get('mean', {})
         stds = stats.get('std', {})
         
@@ -89,25 +88,19 @@ class WellHelmholtzStaircase(BaseTimeDataset):
             if field in means and field in stds:
                 field_mean = means[field]
                 field_std = stds[field]
-                
                 if isinstance(field_mean, (int, float)):
-                    # Scalar field
                     mean_values.extend([field_mean] * shape[0])
                     std_values.extend([field_std] * shape[0])
                 else:
-                    # Vector field
                     mean_values.extend(field_mean)
                     std_values.extend(field_std)
             else:
-                # Default normalization for missing fields
                 print(f"Warning: No normalization constants found for field '{field}', using defaults")
                 mean_values.extend([0.0] * shape[0])
                 std_values.extend([1.0] * shape[0])
         
-        # Convert to tensors with shape (channels, 1, 1) for broadcasting
         constants["mean"] = torch.tensor(mean_values, dtype=torch.float32).reshape(-1, 1, 1)
         constants["std"] = torch.tensor(std_values, dtype=torch.float32).reshape(-1, 1, 1)
-        
         return constants
     
     def _calculate_dataset_size(self):
@@ -122,9 +115,40 @@ class WellHelmholtzStaircase(BaseTimeDataset):
     
     def __len__(self):
         """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
         timesteps_per_sample = 50 - self.max_num_time_steps * self.time_step_size + 1
         return self.num_trajectories * timesteps_per_sample
+
+    @staticmethod
+    def _get_square_pad(h, w):
+        """
+        Compute symmetric padding (left, right, top, bottom) to make (h, w) square.
+        Returns: pads tuple for F.pad and the resulting square size.
+        """
+        size = max(h, w)
+        pad_w = size - w
+        pad_h = size - h
+        left = pad_w // 2
+        right = pad_w - left
+        top = pad_h // 2
+        bottom = pad_h - top
+        return (left, right, top, bottom), size
+
+    def remove_padding(self, tensor, original_hw=None):
+        """
+        Remove the square padding and recover the original (non-square) field.
+        Works for tensors shaped (..., H, W) or (C, H, W) or (B, C, H, W).
+        
+        Args:
+            tensor: padded tensor
+            original_hw: (h, w) to crop back to. Defaults to dataset's original_resolution.
+        """
+        if original_hw is None:
+            original_hw = self.original_resolution
+        h, w = original_hw
+        pads, _ = self._get_square_pad(h, w)
+        left, right, top, bottom = pads
+        slicer = (..., slice(top, top + h), slice(left, left + w))
+        return tensor[slicer]
     
     def __getitem__(self, idx):
         """Load a single sample."""
@@ -133,16 +157,15 @@ class WellHelmholtzStaircase(BaseTimeDataset):
         
         # Map to actual sample and time indices
         timesteps_per_sample = 50 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
+        sample_idx = i % self.num_trajectories
+        time_offset = i // self.num_trajectories
         
-        # Adjust time indices
         actual_t1 = t1 + time_offset
         actual_t2 = t2 + time_offset
         
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
-                # Load input fields at time actual_t1
+                # Load input fields at time actual_t1 (already (y, x) in file)
                 pressure_re_input = dataset.variables['pressure_re'][sample_idx, actual_t1, :, :]  # (y, x)
                 pressure_im_input = dataset.variables['pressure_im'][sample_idx, actual_t1, :, :]  # (y, x)
                 
@@ -150,34 +173,50 @@ class WellHelmholtzStaircase(BaseTimeDataset):
                 pressure_re_target = dataset.variables['pressure_re'][sample_idx, actual_t2, :, :]  # (y, x)
                 pressure_im_target = dataset.variables['pressure_im'][sample_idx, actual_t2, :, :]  # (y, x)
                 
-                # Reshape and concatenate inputs: (y, x) -> (1, y, x)
+                # Stack to (2, y, x)
                 inputs = torch.cat([
-                    torch.from_numpy(pressure_re_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(pressure_im_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                ], dim=0)  # (2, y, x)
+                    torch.from_numpy(pressure_re_input.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(pressure_im_input.astype(np.float32)).unsqueeze(0),
+                ], dim=0)
                 
-                # Reshape and concatenate targets
                 labels = torch.cat([
-                    torch.from_numpy(pressure_re_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(pressure_im_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                ], dim=0)  # (2, y, x)
+                    torch.from_numpy(pressure_re_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(pressure_im_target.astype(np.float32)).unsqueeze(0),
+                ], dim=0)
                 
         except Exception as e:
             print(f"Error loading sample {idx}: {e}")
-            # Return dummy data to prevent training crashes
-            inputs = torch.zeros(self.input_dim, *self.resolution)
-            labels = torch.zeros(self.input_dim, *self.resolution)
+            # Return dummy data to prevent training crashes; match the square shape
+            side = self.resolution
+            inputs = torch.zeros(self.input_dim, side, side, dtype=torch.float32)
+            labels = torch.zeros(self.input_dim, side, side, dtype=torch.float32)
+            # Normalize and return early
+            inputs = (inputs - self.constants["mean"]) / self.constants["std"]
+            labels = (labels - self.constants["mean"]) / self.constants["std"]
+            time_normalized = t / self.constants["time"]
+            return {
+                "pixel_values": inputs,
+                "labels": labels,
+                "time": time_normalized
+            }
         
-        # Apply normalization
+        # Normalize first so padded pixels are exactly 0 afterward
         inputs = (inputs - self.constants["mean"]) / self.constants["std"]
         labels = (labels - self.constants["mean"]) / self.constants["std"]
+        
+        # Pad to square using zeros in normalized space
+        h, w = inputs.shape[-2], inputs.shape[-1]
+        if h != w:
+            pads, _ = self._get_square_pad(h, w)
+            inputs = F.pad(inputs, pads, mode='constant', value=0.0)
+            labels = F.pad(labels, pads, mode='constant', value=0.0)
         
         # Normalize time
         time_normalized = t / self.constants["time"]
         
         return {
-            "pixel_values": inputs,
-            "labels": labels,
+            "pixel_values": inputs,  # (C, S, S) where S = self.resolution
+            "labels": labels,        # (C, S, S)
             "time": time_normalized
         }
     
