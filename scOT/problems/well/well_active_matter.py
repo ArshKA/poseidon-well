@@ -12,7 +12,7 @@ class WellActiveMatter(BaseTimeDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Time constraint - we have 81 actual timesteps per trajectory
+        # Time constraint - we have 81 actual timesteps per trajectory (0 to 80)
         assert self.max_num_time_steps * self.time_step_size <= 81
         
         # Dataset parameters
@@ -131,24 +131,51 @@ class WellActiveMatter(BaseTimeDataset):
     
     def __len__(self):
         """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 81 - self.max_num_time_steps * self.time_step_size + 1
+        # Each trajectory provides a number of possible starting time windows.
+        # If a trajectory has 81 steps (0-80) and we need a window of size `T`,
+        # the last possible start time is 81 - T. So there are 81 - T + 1 windows.
+        # We assume `T = max_num_time_steps * time_step_size`.
+        window_size = self.max_num_time_steps * self.time_step_size
+        timesteps_per_trajectory = 81 - window_size
+        
+        # We need to predict one step ahead, so the input can be at most at t=80-time_step_size
+        timesteps_per_trajectory = 81 - self.time_step_size
+        
+        # The number of possible starting points for a single time step prediction
+        timesteps_per_sample = 81 - self.time_step_size
         return self.num_trajectories * timesteps_per_sample
-    
+
     def __getitem__(self, idx):
-        """Load a single sample."""
-        # Map linear index to time-dependent sample
-        i, t, t1, t2 = self._idx_map(idx)
+        """Load a single sample corresponding to a linear index."""
         
-        # Map to actual sample and time indices
-        timesteps_per_sample = 81 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
+        # ### --- CORRECTED MAPPING LOGIC --- ###
+        # The total number of valid starting time points in a single trajectory.
+        # The latest input can be at t=80-time_step_size to predict t=80.
+        timesteps_per_sample = 81 - self.time_step_size
+        if timesteps_per_sample <= 0:
+            raise ValueError(
+                f"time_step_size ({self.time_step_size}) is too large for the "
+                f"available 81 timesteps."
+            )
+
+        # Correctly map the linear index `idx` to a trajectory and a time window.
+        # `sample_idx` is which trajectory to use.
+        # `time_offset` is the starting time point within that trajectory.
+        sample_idx = idx // timesteps_per_sample
+        time_offset = idx % timesteps_per_sample
+
+        # Define the actual start and end time indices based on the offset.
+        actual_t1 = time_offset                # Input time
+        actual_t2 = time_offset + self.time_step_size  # Target time
         
-        # Adjust time indices
-        actual_t1 = t1 + time_offset
-        actual_t2 = t2 + time_offset
-        
+        # Defensive check to prevent out-of-bounds access before I/O
+        if actual_t2 > 80:
+            raise IndexError(
+                f"Calculated target time index {actual_t2} is out of bounds for idx {idx}. "
+                f"Max timestep is 80."
+            )
+        # ### --- END OF CORRECTION --- ###
+
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
@@ -180,7 +207,7 @@ class WellActiveMatter(BaseTimeDataset):
                 ], dim=0)  # (11, y, x)
                 
         except Exception as e:
-            print(f"Error loading sample {idx}: {e}")
+            print(f"Error loading sample idx={idx} (sample_idx={sample_idx}, t1={actual_t1}, t2={actual_t2}): {e}")
             # Return dummy data to prevent training crashes
             inputs = torch.zeros(self.input_dim, self.resolution, self.resolution)
             labels = torch.zeros(self.input_dim, self.resolution, self.resolution)
@@ -189,8 +216,8 @@ class WellActiveMatter(BaseTimeDataset):
         inputs = (inputs - self.constants["mean"]) / self.constants["std"]
         labels = (labels - self.constants["mean"]) / self.constants["std"]
         
-        # Normalize time
-        time_normalized = t / self.constants["time"]
+        # Normalize time (using the input time)
+        time_normalized = actual_t1 / self.constants["time"]
         
         return {
             "pixel_values": inputs,

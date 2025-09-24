@@ -12,6 +12,7 @@ See the --help page for more information.
 """
 
 import argparse
+import types
 import torch
 import numpy as np
 import random
@@ -377,6 +378,25 @@ def get_trainer(
         args=args,
         compute_metrics=compute_metrics,
     )
+    # Offload logits/labels to CPU during predict to avoid GPU OOM in concatenation
+    def _to_cpu(x):
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu()
+        if isinstance(x, (list, tuple)):
+            return type(x)(_to_cpu(t) for t in x)
+        if isinstance(x, dict):
+            return {k: _to_cpu(v) for k, v in x.items()}
+        return x
+
+    orig_prediction_step = trainer.prediction_step
+
+    def prediction_step_cpu(self, model, inputs, prediction_loss_only=False, ignore_keys=None):
+        loss, logits, labels = orig_prediction_step(model, inputs, prediction_loss_only, ignore_keys)
+        logits = _to_cpu(logits)
+        labels = _to_cpu(labels)
+        return loss, logits, labels
+
+    trainer.prediction_step = types.MethodType(prediction_step_cpu, trainer)
     return trainer
 
 
@@ -926,6 +946,21 @@ if __name__ == "__main__":
             )
 
             def compute_metrics(eval_preds):
+                # ### START OF FIX ###
+                # Check for shape mismatch and crop predictions if necessary
+                if eval_preds.predictions.shape[-2:] != eval_preds.label_ids.shape[-2:]:
+                    print("Warning: Prediction and label shapes differ. Cropping predictions...")
+                    # Use a simple center crop assuming labels have the correct original size
+                    h, w = eval_preds.label_ids.shape[-2:]
+                    th, tw = eval_preds.predictions.shape[-2:]
+                    top = (th - h) // 2
+                    left = (tw - w) // 2
+                    # Create a cropped version of predictions
+                    predictions_cropped = eval_preds.predictions[..., top:top+h, left:left+w]
+                    # Create a new EvalPrediction object with the cropped data
+                    eval_preds = EvalPrediction(predictions=predictions_cropped, label_ids=eval_preds.label_ids)
+                # ### END OF FIX ###
+
                 channel_list = dataset.channel_slice_list
 
                 def get_relative_statistics(errors):

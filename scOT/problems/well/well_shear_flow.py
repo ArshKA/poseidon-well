@@ -13,7 +13,7 @@ class WellShearFlow(BaseTimeDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Time constraint - we have 200 actual timesteps per trajectory
+        # Time constraint - we have 200 actual timesteps per trajectory (0 to 199)
         assert self.max_num_time_steps * self.time_step_size <= 200
         
         # Dataset parameters
@@ -65,7 +65,7 @@ class WellShearFlow(BaseTimeDataset):
             return {
                 "mean": torch.zeros(self.input_dim, 1, 1),
                 "std": torch.ones(self.input_dim, 1, 1),
-                "time": 200.0
+                "time": 199.0
             }
         
         with open(stats_file, 'r') as f:
@@ -73,7 +73,7 @@ class WellShearFlow(BaseTimeDataset):
         
         # Convert to torch tensors with proper shapes for broadcasting
         constants = {
-            "time": 200.0,  # Time goes from 0 to 200
+            "time": 199.0,  # Time goes from 0 to 199
         }
         
         # Process each field's normalization
@@ -123,8 +123,9 @@ class WellShearFlow(BaseTimeDataset):
     
     def __len__(self):
         """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 200 - self.max_num_time_steps * self.time_step_size + 1
+        # The number of possible starting points for a single time step prediction.
+        # If there are 200 timesteps (0-199), the last input can be at t=199-time_step_size.
+        timesteps_per_sample = 200 - self.time_step_size
         return self.num_trajectories * timesteps_per_sample
 
     @staticmethod
@@ -161,59 +162,59 @@ class WellShearFlow(BaseTimeDataset):
     
     def __getitem__(self, idx):
         """Load a single sample."""
-        # Map linear index to time-dependent sample
-        i, t, t1, t2 = self._idx_map(idx)
         
-        # Map to actual sample and time indices
-        timesteps_per_sample = 200 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
-        
-        # Adjust time indices
-        actual_t1 = t1 + time_offset
-        actual_t2 = t2 + time_offset
+        # ### --- CORRECTED MAPPING LOGIC --- ###
+        timesteps_per_sample = 200 - self.time_step_size
+        if timesteps_per_sample <= 0:
+            raise ValueError(
+                f"time_step_size ({self.time_step_size}) is too large for the "
+                f"available 200 timesteps."
+            )
+
+        sample_idx = idx // timesteps_per_sample
+        time_offset = idx % timesteps_per_sample
+        actual_t1 = time_offset
+        actual_t2 = time_offset + self.time_step_size
+
+        if actual_t2 > 199:
+            raise IndexError(
+                f"Calculated target time index {actual_t2} is out of bounds for idx {idx}. "
+                f"Max timestep is 199."
+            )
+        # ### --- END OF CORRECTION --- ###
         
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
-                # Load input fields at time actual_t1 (already (y, x) in file)
-                tracer_input = dataset.variables['tracer'][sample_idx, actual_t1, :, :]        # (y, x)
-                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]    # (y, x)
-                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :] # (y, x, 2)
-                vel_x_input = velocity_input[:, :, 0]  # (y, x)
-                vel_y_input = velocity_input[:, :, 1]  # (y, x)
+                # Load input fields at time actual_t1
+                tracer_input = dataset.variables['tracer'][sample_idx, actual_t1, :, :]
+                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]
                 
                 # Load target fields at time actual_t2
-                tracer_target = dataset.variables['tracer'][sample_idx, actual_t2, :, :]        # (y, x)
-                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]    # (y, x)
-                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :] # (y, x, 2)
-                vel_x_target = velocity_target[:, :, 0]  # (y, x)
-                vel_y_target = velocity_target[:, :, 1]  # (y, x)
+                tracer_target = dataset.variables['tracer'][sample_idx, actual_t2, :, :]
+                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]
                 
-                # Stack and convert to (4, y, x)
+                # Convert to tensors and combine
                 inputs = torch.cat([
                     torch.from_numpy(tracer_input.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(vel_x_input.astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(vel_y_input.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_input.astype(np.float32)).permute(2, 0, 1), # (y, x, 2) -> (2, y, x)
                 ], dim=0)
                 
                 labels = torch.cat([
                     torch.from_numpy(tracer_target.astype(np.float32)).unsqueeze(0),
                     torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(vel_x_target.astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(vel_y_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_target.astype(np.float32)).permute(2, 0, 1), # (y, x, 2) -> (2, y, x)
                 ], dim=0)
                 
         except Exception as e:
-            print(f"Error loading sample {idx}: {e}")
-            # Return dummy data to prevent training crashes; match the square shape
+            print(f"Error loading sample idx={idx} (sample_idx={sample_idx}, t1={actual_t1}, t2={actual_t2}): {e}")
             side = self.resolution
             inputs = torch.zeros(self.input_dim, side, side, dtype=torch.float32)
             labels = torch.zeros(self.input_dim, side, side, dtype=torch.float32)
-            # Normalize time and return early (next normalization is no-op for zeros)
-            inputs = (inputs - self.constants["mean"]) / self.constants["std"]
-            labels = (labels - self.constants["mean"]) / self.constants["std"]
-            time_normalized = t / self.constants["time"]
+
+            time_normalized = actual_t1 / self.constants["time"]
             return {
                 "pixel_values": inputs,
                 "labels": labels,
@@ -232,7 +233,7 @@ class WellShearFlow(BaseTimeDataset):
             labels = F.pad(labels, pads, mode='constant', value=0.0)
         
         # Normalize time
-        time_normalized = t / self.constants["time"]
+        time_normalized = actual_t1 / self.constants["time"]
         
         return {
             "pixel_values": inputs,  # shape: (C, S, S) where S = self.resolution

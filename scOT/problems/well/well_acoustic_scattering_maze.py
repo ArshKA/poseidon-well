@@ -12,7 +12,7 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Time constraint - we have 202 actual timesteps per trajectory
+        # Time constraint - we have 202 actual timesteps per trajectory (0 to 201)
         assert self.max_num_time_steps * self.time_step_size <= 202
         
         # Dataset parameters
@@ -122,24 +122,39 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
     
     def __len__(self):
         """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 202 - self.max_num_time_steps * self.time_step_size + 1
+        # The number of possible starting points for a single time step prediction.
+        # If there are 202 timesteps (0-201), the last input can be at t=201-time_step_size.
+        timesteps_per_sample = 202 - self.time_step_size
         return self.num_trajectories * timesteps_per_sample
     
     def __getitem__(self, idx):
-        """Load a single sample."""
-        # Map linear index to time-dependent sample
-        i, t, t1, t2 = self._idx_map(idx)
+        """Load a single sample corresponding to a linear index."""
+
+        # ### --- CORRECTED MAPPING LOGIC --- ###
+        # The total number of valid starting time points in a single trajectory.
+        timesteps_per_sample = 202 - self.time_step_size
+        if timesteps_per_sample <= 0:
+            raise ValueError(
+                f"time_step_size ({self.time_step_size}) is too large for the "
+                f"available 202 timesteps."
+            )
+
+        # Correctly map the linear index `idx` to a trajectory and a time window.
+        sample_idx = idx // timesteps_per_sample
+        time_offset = idx % timesteps_per_sample
+
+        # Define the actual start and end time indices based on the offset.
+        actual_t1 = time_offset                # Input time
+        actual_t2 = time_offset + self.time_step_size  # Target time
         
-        # Map to actual sample and time indices
-        timesteps_per_sample = 202 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
-        
-        # Adjust time indices
-        actual_t1 = t1 + time_offset
-        actual_t2 = t2 + time_offset
-        
+        # Defensive check to prevent out-of-bounds access before I/O
+        if actual_t2 > 201:
+            raise IndexError(
+                f"Calculated target time index {actual_t2} is out of bounds for idx {idx}. "
+                f"Max timestep is 201."
+            )
+        # ### --- END OF CORRECTION --- ###
+
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
@@ -150,28 +165,20 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
                 pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]   # (y, x)
                 velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]  # (y, x, 2)
                 
-                # Extract velocity components
-                vel_x_input = velocity_input[:, :, 0]   # (y, x)
-                vel_y_input = velocity_input[:, :, 1]   # (y, x)
-                vel_x_target = velocity_target[:, :, 0]  # (y, x)
-                vel_y_target = velocity_target[:, :, 1]  # (y, x)
-                
-                # Reshape and concatenate inputs: (y, x) -> (1, y, x)
+                # Reshape and concatenate inputs: (y, x, 2) -> (2, y, x) and (y, x) -> (1, y, x)
                 inputs = torch.cat([
-                    torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(vel_x_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(vel_y_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_input.astype(np.float32)).permute(2, 0, 1)
                 ], dim=0)  # (3, y, x)
                 
                 # Reshape and concatenate targets
                 labels = torch.cat([
-                    torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(vel_x_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(vel_y_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_target.astype(np.float32)).permute(2, 0, 1)
                 ], dim=0)  # (3, y, x)
                 
         except Exception as e:
-            print(f"Error loading sample {idx}: {e}")
+            print(f"Error loading sample idx={idx} (sample_idx={sample_idx}, t1={actual_t1}, t2={actual_t2}): {e}")
             # Return dummy data to prevent training crashes
             inputs = torch.zeros(self.input_dim, self.resolution, self.resolution)
             labels = torch.zeros(self.input_dim, self.resolution, self.resolution)
@@ -180,8 +187,8 @@ class WellAcousticScatteringMaze(BaseTimeDataset):
         inputs = (inputs - self.constants["mean"]) / self.constants["std"]
         labels = (labels - self.constants["mean"]) / self.constants["std"]
         
-        # Normalize time
-        time_normalized = t / self.constants["time"]
+        # Normalize time (using the input time)
+        time_normalized = actual_t1 / self.constants["time"]
         
         return {
             "pixel_values": inputs,

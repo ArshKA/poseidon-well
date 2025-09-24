@@ -12,7 +12,7 @@ class WellGrayScottReactionDiffusion(BaseTimeDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Time constraint - we have 1001 actual timesteps per trajectory
+        # Time constraint - we have 1001 actual timesteps per trajectory (0 to 1000)
         assert self.max_num_time_steps * self.time_step_size <= 1001
         
         # Dataset parameters
@@ -122,23 +122,38 @@ class WellGrayScottReactionDiffusion(BaseTimeDataset):
     
     def __len__(self):
         """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 1001 - self.max_num_time_steps * self.time_step_size + 1
+        # The number of possible starting points for a single time step prediction.
+        # If there are 1001 timesteps (0-1000), the last input can be at t=1000-time_step_size.
+        timesteps_per_sample = 1001 - self.time_step_size
         return self.num_trajectories * timesteps_per_sample
     
     def __getitem__(self, idx):
-        """Load a single sample."""
-        # Map linear index to time-dependent sample
-        i, t, t1, t2 = self._idx_map(idx)
+        """Load a single sample corresponding to a linear index."""
         
-        # Map to actual sample and time indices
-        timesteps_per_sample = 1001 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
+        # ### --- CORRECTED MAPPING LOGIC --- ###
+        # The total number of valid starting time points in a single trajectory.
+        timesteps_per_sample = 1001 - self.time_step_size
+        if timesteps_per_sample <= 0:
+            raise ValueError(
+                f"time_step_size ({self.time_step_size}) is too large for the "
+                f"available 1001 timesteps."
+            )
+
+        # Correctly map the linear index `idx` to a trajectory and a time window.
+        sample_idx = idx // timesteps_per_sample
+        time_offset = idx % timesteps_per_sample
+
+        # Define the actual start and end time indices based on the offset.
+        actual_t1 = time_offset                # Input time
+        actual_t2 = time_offset + self.time_step_size  # Target time
         
-        # Adjust time indices
-        actual_t1 = t1 + time_offset
-        actual_t2 = t2 + time_offset
+        # Defensive check to prevent out-of-bounds access before I/O
+        if actual_t2 > 1000:
+            raise IndexError(
+                f"Calculated target time index {actual_t2} is out of bounds for idx {idx}. "
+                f"Max timestep is 1000."
+            )
+        # ### --- END OF CORRECTION --- ###
         
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
@@ -151,19 +166,19 @@ class WellGrayScottReactionDiffusion(BaseTimeDataset):
                 b_target = dataset.variables['B'][sample_idx, actual_t2, :, :]  # (y, x)
                 
                 # Reshape and concatenate inputs: (y, x) -> (1, y, x)
-                inputs = torch.cat([
-                    torch.from_numpy(a_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(b_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                inputs = torch.stack([
+                    torch.from_numpy(a_input.astype(np.float32)),
+                    torch.from_numpy(b_input.astype(np.float32)),
                 ], dim=0)  # (2, y, x)
                 
                 # Reshape and concatenate targets
-                labels = torch.cat([
-                    torch.from_numpy(a_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(b_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
+                labels = torch.stack([
+                    torch.from_numpy(a_target.astype(np.float32)),
+                    torch.from_numpy(b_target.astype(np.float32)),
                 ], dim=0)  # (2, y, x)
                 
         except Exception as e:
-            print(f"Error loading sample {idx}: {e}")
+            print(f"Error loading sample idx={idx} (sample_idx={sample_idx}, t1={actual_t1}, t2={actual_t2}): {e}")
             # Return dummy data to prevent training crashes
             inputs = torch.zeros(self.input_dim, self.resolution, self.resolution)
             labels = torch.zeros(self.input_dim, self.resolution, self.resolution)
@@ -172,8 +187,8 @@ class WellGrayScottReactionDiffusion(BaseTimeDataset):
         inputs = (inputs - self.constants["mean"]) / self.constants["std"]
         labels = (labels - self.constants["mean"]) / self.constants["std"]
         
-        # Normalize time
-        time_normalized = t / self.constants["time"]
+        # Normalize time (using the input time)
+        time_normalized = actual_t1 / self.constants["time"]
         
         return {
             "pixel_values": inputs,

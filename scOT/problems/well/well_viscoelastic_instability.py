@@ -61,61 +61,42 @@ class WellViscoelasticInstability(BaseTimeDataset):
             return {
                 "mean": torch.zeros(self.input_dim, 1, 1),
                 "std": torch.ones(self.input_dim, 1, 1),
-                "time": 60.0
+                "time": 59.0
             }
         
         with open(stats_file, 'r') as f:
             stats = yaml.safe_load(f)
         
-        # Convert to torch tensors with proper shapes for broadcasting
         constants = {
-            "time": 60.0,  # Time goes from 0 to 60 (max timesteps)
+            "time": 59.0,  # Time goes from 0 to 59 (max timesteps)
         }
         
-        # Process each field's normalization
         means = stats.get('mean', {})
         stds = stats.get('std', {})
         
-        # Expected in stats.yaml: 'pressure': scalar, 'c_zz': scalar, 'velocity': [vx, vy], 'C': [4]
-        mean_values = []
-        std_values = []
+        mean_values, std_values = [], []
+
+        def _get_stat(stats_dict, key, default, length):
+            val = stats_dict.get(key, default)
+            if isinstance(val, (int, float)):
+                return [float(val)] * length
+            flat_val = np.array(val, dtype=np.float32).flatten().tolist()
+            while len(flat_val) < length:
+                flat_val.append(float(default))
+            return flat_val[:length]
+
+        mean_values.extend(_get_stat(means, 'pressure', 0.0, 1))
+        std_values.extend(_get_stat(stds, 'pressure', 1.0, 1))
         
-        def _to_flat_list(value, default, expected_len):
-            """Convert stats entry to a flat list of length expected_len.
-            Accepts scalars, lists, or nested lists (e.g., 2x2). Pads/truncates as needed.
-            """
-            import numpy as _np
-            if value is None:
-                flat = [_np.float32(default)] * expected_len
-            elif isinstance(value, (int, float)):
-                flat = [_np.float32(value)] * expected_len
-            else:
-                try:
-                    flat_arr = _np.array(value, dtype=_np.float32).reshape(-1)
-                    flat = flat_arr.tolist()
-                except Exception:
-                    flat = [_np.float32(default)] * expected_len
-            # Pad or truncate
-            if len(flat) < expected_len:
-                flat = flat + [default] * (expected_len - len(flat))
-            elif len(flat) > expected_len:
-                flat = flat[:expected_len]
-            return [float(x) for x in flat]
+        mean_values.extend(_get_stat(means, 'c_zz', 0.0, 1))
+        std_values.extend(_get_stat(stds, 'c_zz', 1.0, 1))
+
+        mean_values.extend(_get_stat(means, 'velocity', 0.0, 2))
+        std_values.extend(_get_stat(stds, 'velocity', 1.0, 2))
+
+        mean_values.extend(_get_stat(means, 'C', 0.0, 4))
+        std_values.extend(_get_stat(stds, 'C', 1.0, 4))
         
-        # pressure
-        mean_values.append(float(means.get('pressure', 0.0)))
-        std_values.append(float(stds.get('pressure', 1.0)))
-        # c_zz
-        mean_values.append(float(means.get('c_zz', 0.0)))
-        std_values.append(float(stds.get('c_zz', 1.0)))
-        # velocity (2)
-        mean_values.extend(_to_flat_list(means.get('velocity', [0.0, 0.0]), 0.0, 2))
-        std_values.extend(_to_flat_list(stds.get('velocity', [1.0, 1.0]), 1.0, 2))
-        # C tensor flattened (4)
-        mean_values.extend(_to_flat_list(means.get('C', [0.0, 0.0, 0.0, 0.0]), 0.0, 4))
-        std_values.extend(_to_flat_list(stds.get('C', [1.0, 1.0, 1.0, 1.0]), 1.0, 4))
-        
-        # Convert to tensors with shape (channels, 1, 1) for broadcasting
         constants["mean"] = torch.tensor(mean_values, dtype=torch.float32).reshape(-1, 1, 1)
         constants["std"] = torch.tensor(std_values, dtype=torch.float32).reshape(-1, 1, 1)
         
@@ -125,72 +106,72 @@ class WellViscoelasticInstability(BaseTimeDataset):
         """Calculate the total number of trajectories from the assembled file."""
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
-                total_samples = dataset.dimensions['sample'].size
-                return total_samples
+                return dataset.dimensions['sample'].size
         except Exception as e:
             print(f"Warning: Could not read dataset size from {self.data_file}: {e}")
             return 100  # Fallback
     
     def __len__(self):
-        """Return the total number of time-dependent samples."""
-        # Each sample can provide (n_timesteps - max_num_time_steps * time_step_size + 1) time samples
-        timesteps_per_sample = 60 - self.max_num_time_steps * self.time_step_size + 1
+        """Return the total number of time-dependent samples based on max trajectory length."""
+        # If there are max 60 timesteps (0-59), the last input can be at t=59-time_step_size.
+        timesteps_per_sample = 60 - self.time_step_size
         return self.num_trajectories * timesteps_per_sample
     
     def __getitem__(self, idx):
-        """Load a single sample."""
-        # Map linear index to time-dependent sample
-        i, t, t1, t2 = self._idx_map(idx)
-        
-        # Map to actual sample and time indices
-        timesteps_per_sample = 60 - self.max_num_time_steps * self.time_step_size + 1
-        sample_idx = i % self.num_trajectories  # Which trajectory
-        time_offset = i // self.num_trajectories  # Which time window within trajectory
-        
-        # Adjust time indices
-        actual_t1 = t1 + time_offset
-        actual_t2 = t2 + time_offset
+        """Load a single sample corresponding to a linear index."""
+
+        # ### --- CORRECTED MAPPING LOGIC --- ###
+        timesteps_per_sample = 60 - self.time_step_size
+        if timesteps_per_sample <= 0:
+            raise ValueError(
+                f"time_step_size ({self.time_step_size}) is too large for the "
+                f"available 60 timesteps."
+            )
+
+        sample_idx = idx // timesteps_per_sample
+        time_offset = idx % timesteps_per_sample
+        actual_t1 = time_offset
+        actual_t2 = time_offset + self.time_step_size
+
+        if actual_t2 > 59:
+            raise IndexError(
+                f"Calculated target time index {actual_t2} is out of bounds for idx {idx}. "
+                f"Max timestep is 59."
+            )
+        # ### --- END OF CORRECTION --- ###
         
         try:
             with netCDF4.Dataset(self.data_file, 'r') as dataset:
                 # Load input fields at time actual_t1
-                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]   # (y, x)
-                c_zz_input = dataset.variables['c_zz'][sample_idx, actual_t1, :, :]           # (y, x)
-                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]  # (y, x, 2)
-                C_input = dataset.variables['C'][sample_idx, actual_t1, :, :, :]                # (y, x, 4)
+                pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]
+                c_zz_input = dataset.variables['c_zz'][sample_idx, actual_t1, :, :]
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]
+                C_input = dataset.variables['C'][sample_idx, actual_t1, :, :, :]
                 
                 # Load target fields at time actual_t2
-                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]   # (y, x)
-                c_zz_target = dataset.variables['c_zz'][sample_idx, actual_t2, :, :]           # (y, x)
-                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]  # (y, x, 2)
-                C_target = dataset.variables['C'][sample_idx, actual_t2, :, :, :]                # (y, x, 4)
+                pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]
+                c_zz_target = dataset.variables['c_zz'][sample_idx, actual_t2, :, :]
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]
+                C_target = dataset.variables['C'][sample_idx, actual_t2, :, :, :]
                 
-                # Reshape and concatenate inputs: (y, x) -> (1, y, x)
+                # Reshape and concatenate inputs
                 inputs = torch.cat([
-                    torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(c_zz_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(velocity_input[..., 0].astype(np.float32)).unsqueeze(0),  # vx
-                    torch.from_numpy(velocity_input[..., 1].astype(np.float32)).unsqueeze(0),  # vy
-                    torch.from_numpy(C_input[..., 0].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_input[..., 1].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_input[..., 2].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_input[..., 3].astype(np.float32)).unsqueeze(0),
-                ], dim=0)  # (8, y, x)
+                    torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(c_zz_input.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_input.astype(np.float32)).permute(2, 0, 1), # (y, x, 2) -> (2, y, x)
+                    torch.from_numpy(C_input.astype(np.float32)).permute(2, 0, 1),      # (y, x, 4) -> (4, y, x)
+                ], dim=0)
                 
                 # Reshape and concatenate targets
                 labels = torch.cat([
-                    torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
-                    torch.from_numpy(c_zz_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(velocity_target[..., 0].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(velocity_target[..., 1].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_target[..., 0].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_target[..., 1].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_target[..., 2].astype(np.float32)).unsqueeze(0),
-                    torch.from_numpy(C_target[..., 3].astype(np.float32)).unsqueeze(0),
-                ], dim=0)  # (8, y, x)
+                    torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(c_zz_target.astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_target.astype(np.float32)).permute(2, 0, 1),
+                    torch.from_numpy(C_target.astype(np.float32)).permute(2, 0, 1),
+                ], dim=0)
                 
         except Exception as e:
-            print(f"Error loading sample {idx}: {e}")
+            print(f"Error loading sample idx={idx} (sample_idx={sample_idx}, t1={actual_t1}, t2={actual_t2}): {e}")
             # Return dummy data to prevent training crashes
             inputs = torch.zeros(self.input_dim, self.resolution, self.resolution)
             labels = torch.zeros(self.input_dim, self.resolution, self.resolution)
@@ -200,7 +181,7 @@ class WellViscoelasticInstability(BaseTimeDataset):
         labels = (labels - self.constants["mean"]) / self.constants["std"]
         
         # Normalize time
-        time_normalized = t / self.constants["time"]
+        time_normalized = actual_t1 / self.constants["time"]
         
         return {
             "pixel_values": inputs,
