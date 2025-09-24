@@ -80,8 +80,7 @@ class WellTurbulentRadiativeLayer2D(BaseTimeDataset):
         field_shapes = {
             'density': (1,),     # scalar
             'pressure': (1,),    # scalar
-            'velocity_x': (1,),  # scalar
-            'velocity_y': (1,),  # scalar
+            'velocity': (2,),    # vector (vx, vy)
         }
         
         mean_values = []
