@@ -179,14 +179,16 @@ class WellTurbulentRadiativeLayer2D(BaseTimeDataset):
                 # Load input fields at time actual_t1 (already (y, x) in file)
                 density_input = dataset.variables['density'][sample_idx, actual_t1, :, :]    # (y, x)
                 pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]  # (y, x)
-                vel_x_input   = dataset.variables['velocity_x'][sample_idx, actual_t1, :, :] # (y, x)
-                vel_y_input   = dataset.variables['velocity_y'][sample_idx, actual_t1, :, :] # (y, x)
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]  # (y, x, 2)
+                vel_x_input = velocity_input[:, :, 0]
+                vel_y_input = velocity_input[:, :, 1]
                 
                 # Load target fields at time actual_t2
                 density_target = dataset.variables['density'][sample_idx, actual_t2, :, :]    # (y, x)
                 pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]  # (y, x)
-                vel_x_target   = dataset.variables['velocity_x'][sample_idx, actual_t2, :, :] # (y, x)
-                vel_y_target   = dataset.variables['velocity_y'][sample_idx, actual_t2, :, :] # (y, x)
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]  # (y, x, 2)
+                vel_x_target = velocity_target[:, :, 0]
+                vel_y_target = velocity_target[:, :, 1]
                 
                 # Stack to (4, y, x)
                 inputs = torch.cat([
