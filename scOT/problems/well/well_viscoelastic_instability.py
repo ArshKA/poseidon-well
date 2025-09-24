@@ -22,9 +22,9 @@ class WellViscoelasticInstability(BaseTimeDataset):
         
         # Data specifications
         self.resolution = 512  # 512x512 resolution
-        self.input_dim = 8  # pressure + c_zz + velocity_x + velocity_y + C_xx + C_xy + C_yx + C_yy
+        self.input_dim = 8  # pressure, c_zz, velocity(2), C(4)
         self.output_dim = 8  # Same as input
-        self.label_description = "[pressure],[c_zz],[velocity_x],[velocity_y],[C_xx],[C_xy],[C_yx],[C_yy]"
+        self.label_description = "[pressure],[c_zz],[velocity_x,velocity_y],[C_0,C_1,C_2,C_3]"
         
         # Find assembled data file
         self.data_file = self._find_assembled_file()
@@ -73,42 +73,47 @@ class WellViscoelasticInstability(BaseTimeDataset):
         }
         
         # Process each field's normalization
-        field_shapes = {
-            'pressure': (1,),    # scalar
-            'c_zz': (1,),        # scalar
-            'velocity_x': (1,),  # scalar
-            'velocity_y': (1,),  # scalar
-            'C_xx': (1,),        # tensor component
-            'C_xy': (1,),        # tensor component
-            'C_yx': (1,),        # tensor component
-            'C_yy': (1,),        # tensor component
-        }
-        
-        mean_values = []
-        std_values = []
-        
-        # Extract mean and std sections from YAML
         means = stats.get('mean', {})
         stds = stats.get('std', {})
         
-        for field, shape in field_shapes.items():
-            if field in means and field in stds:
-                field_mean = means[field]
-                field_std = stds[field]
-                
-                if isinstance(field_mean, (int, float)):
-                    # Scalar field
-                    mean_values.extend([field_mean] * shape[0])
-                    std_values.extend([field_std] * shape[0])
-                else:
-                    # Vector field
-                    mean_values.extend(field_mean)
-                    std_values.extend(field_std)
+        # Expected in stats.yaml: 'pressure': scalar, 'c_zz': scalar, 'velocity': [vx, vy], 'C': [4]
+        mean_values = []
+        std_values = []
+        
+        def _to_flat_list(value, default, expected_len):
+            """Convert stats entry to a flat list of length expected_len.
+            Accepts scalars, lists, or nested lists (e.g., 2x2). Pads/truncates as needed.
+            """
+            import numpy as _np
+            if value is None:
+                flat = [_np.float32(default)] * expected_len
+            elif isinstance(value, (int, float)):
+                flat = [_np.float32(value)] * expected_len
             else:
-                # Default normalization for missing fields
-                print(f"Warning: No normalization constants found for field '{field}', using defaults")
-                mean_values.extend([0.0] * shape[0])
-                std_values.extend([1.0] * shape[0])
+                try:
+                    flat_arr = _np.array(value, dtype=_np.float32).reshape(-1)
+                    flat = flat_arr.tolist()
+                except Exception:
+                    flat = [_np.float32(default)] * expected_len
+            # Pad or truncate
+            if len(flat) < expected_len:
+                flat = flat + [default] * (expected_len - len(flat))
+            elif len(flat) > expected_len:
+                flat = flat[:expected_len]
+            return [float(x) for x in flat]
+        
+        # pressure
+        mean_values.append(float(means.get('pressure', 0.0)))
+        std_values.append(float(stds.get('pressure', 1.0)))
+        # c_zz
+        mean_values.append(float(means.get('c_zz', 0.0)))
+        std_values.append(float(stds.get('c_zz', 1.0)))
+        # velocity (2)
+        mean_values.extend(_to_flat_list(means.get('velocity', [0.0, 0.0]), 0.0, 2))
+        std_values.extend(_to_flat_list(stds.get('velocity', [1.0, 1.0]), 1.0, 2))
+        # C tensor flattened (4)
+        mean_values.extend(_to_flat_list(means.get('C', [0.0, 0.0, 0.0, 0.0]), 0.0, 4))
+        std_values.extend(_to_flat_list(stds.get('C', [1.0, 1.0, 1.0, 1.0]), 1.0, 4))
         
         # Convert to tensors with shape (channels, 1, 1) for broadcasting
         constants["mean"] = torch.tensor(mean_values, dtype=torch.float32).reshape(-1, 1, 1)
@@ -151,45 +156,37 @@ class WellViscoelasticInstability(BaseTimeDataset):
                 # Load input fields at time actual_t1
                 pressure_input = dataset.variables['pressure'][sample_idx, actual_t1, :, :]   # (y, x)
                 c_zz_input = dataset.variables['c_zz'][sample_idx, actual_t1, :, :]           # (y, x)
-                vel_x_input = dataset.variables['velocity_x'][sample_idx, actual_t1, :, :]    # (y, x)
-                vel_y_input = dataset.variables['velocity_y'][sample_idx, actual_t1, :, :]    # (y, x)
-                c_xx_input = dataset.variables['C_xx'][sample_idx, actual_t1, :, :]           # (y, x)
-                c_xy_input = dataset.variables['C_xy'][sample_idx, actual_t1, :, :]           # (y, x)
-                c_yx_input = dataset.variables['C_yx'][sample_idx, actual_t1, :, :]           # (y, x)
-                c_yy_input = dataset.variables['C_yy'][sample_idx, actual_t1, :, :]           # (y, x)
+                velocity_input = dataset.variables['velocity'][sample_idx, actual_t1, :, :, :]  # (y, x, 2)
+                C_input = dataset.variables['C'][sample_idx, actual_t1, :, :, :]                # (y, x, 4)
                 
                 # Load target fields at time actual_t2
                 pressure_target = dataset.variables['pressure'][sample_idx, actual_t2, :, :]   # (y, x)
                 c_zz_target = dataset.variables['c_zz'][sample_idx, actual_t2, :, :]           # (y, x)
-                vel_x_target = dataset.variables['velocity_x'][sample_idx, actual_t2, :, :]    # (y, x)
-                vel_y_target = dataset.variables['velocity_y'][sample_idx, actual_t2, :, :]    # (y, x)
-                c_xx_target = dataset.variables['C_xx'][sample_idx, actual_t2, :, :]           # (y, x)
-                c_xy_target = dataset.variables['C_xy'][sample_idx, actual_t2, :, :]           # (y, x)
-                c_yx_target = dataset.variables['C_yx'][sample_idx, actual_t2, :, :]           # (y, x)
-                c_yy_target = dataset.variables['C_yy'][sample_idx, actual_t2, :, :]           # (y, x)
+                velocity_target = dataset.variables['velocity'][sample_idx, actual_t2, :, :, :]  # (y, x, 2)
+                C_target = dataset.variables['C'][sample_idx, actual_t2, :, :, :]                # (y, x, 4)
                 
                 # Reshape and concatenate inputs: (y, x) -> (1, y, x)
                 inputs = torch.cat([
                     torch.from_numpy(pressure_input.astype(np.float32)).unsqueeze(0),  # (1, y, x)
                     torch.from_numpy(c_zz_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(vel_x_input.astype(np.float32)).unsqueeze(0),    # (1, y, x)
-                    torch.from_numpy(vel_y_input.astype(np.float32)).unsqueeze(0),    # (1, y, x)
-                    torch.from_numpy(c_xx_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(c_xy_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(c_yx_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(c_yy_input.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(velocity_input[..., 0].astype(np.float32)).unsqueeze(0),  # vx
+                    torch.from_numpy(velocity_input[..., 1].astype(np.float32)).unsqueeze(0),  # vy
+                    torch.from_numpy(C_input[..., 0].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_input[..., 1].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_input[..., 2].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_input[..., 3].astype(np.float32)).unsqueeze(0),
                 ], dim=0)  # (8, y, x)
                 
                 # Reshape and concatenate targets
                 labels = torch.cat([
                     torch.from_numpy(pressure_target.astype(np.float32)).unsqueeze(0),  # (1, y, x)
                     torch.from_numpy(c_zz_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(vel_x_target.astype(np.float32)).unsqueeze(0),    # (1, y, x)
-                    torch.from_numpy(vel_y_target.astype(np.float32)).unsqueeze(0),    # (1, y, x)
-                    torch.from_numpy(c_xx_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(c_xy_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(c_yx_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
-                    torch.from_numpy(c_yy_target.astype(np.float32)).unsqueeze(0),     # (1, y, x)
+                    torch.from_numpy(velocity_target[..., 0].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(velocity_target[..., 1].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_target[..., 0].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_target[..., 1].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_target[..., 2].astype(np.float32)).unsqueeze(0),
+                    torch.from_numpy(C_target[..., 3].astype(np.float32)).unsqueeze(0),
                 ], dim=0)  # (8, y, x)
                 
         except Exception as e:

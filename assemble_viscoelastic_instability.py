@@ -26,26 +26,29 @@ def assemble_viscoelastic_instability_data(input_dir, output_file):
     if not nc_files:
         raise ValueError(f"No .hdf5 files found in {input_dir}")
     
-    # Analyze first file to get dimensions
+    # Analyze first file to get dimensions (use HDF5 groups/datasets)
     samples = [0]
     with Dataset(nc_files[0], "r") as first_nc:
-        print(f"Variables in first file: {list(first_nc.variables.keys())}")
-        print(f"Dimensions in first file: {list(first_nc.dimensions.keys())}")
-        
-        # Get dimensions
-        n_trajectories = first_nc.dimensions["sample"].size
-        n_timesteps = first_nc.dimensions["time"].size
-        height = first_nc.dimensions["y"].size
-        width = first_nc.dimensions["x"].size
-        
+        print(f"Groups in first file: {list(first_nc.groups.keys())}")
+        # Infer dimensions from a representative dataset
+        pressure_var = first_nc.groups['t0_fields'].variables['pressure']
+        n_trajectories = pressure_var.shape[0]
+        n_timesteps = pressure_var.shape[1]
+        height = pressure_var.shape[2]
+        width = pressure_var.shape[3]
         samples.append(n_trajectories)
-        
         print(f"File structure: {n_trajectories} trajectories, {n_timesteps} timesteps, {height}x{width} resolution")
     
     # Count samples from all files
     for nc_file in nc_files[1:]:
         with Dataset(nc_file, "r") as nc:
-            samples.append(nc.dimensions["sample"].size)
+            pressure_var = nc.groups['t0_fields'].variables['pressure']
+            # Track minimum common timesteps across files
+            n_timesteps = min(n_timesteps, pressure_var.shape[1])
+            # Validate spatial size consistency
+            if pressure_var.shape[2] != height or pressure_var.shape[3] != width:
+                raise ValueError(f"Spatial resolution mismatch in {nc_file}: got {pressure_var.shape[2]}x{pressure_var.shape[3]}, expected {height}x{width}")
+            samples.append(pressure_var.shape[0])
     
     total_samples = sum(samples)
     
@@ -96,21 +99,16 @@ def assemble_viscoelastic_instability_data(input_dir, output_file):
             print(f"Processing {nc_file} ({i+1}/{len(nc_files)})")
             
             with Dataset(nc_file, "r") as nc:
-                # Read data for each field
-                pressure_data = nc.variables['pressure'][:]
-                c_zz_data = nc.variables['c_zz'][:]
+                # Read data for each field from groups and align time dim to common n_timesteps
+                pressure_data = nc.groups['t0_fields'].variables['pressure'][:, :n_timesteps, :, :]
+                c_zz_data = nc.groups['t0_fields'].variables['c_zz'][:, :n_timesteps, :, :]
                 
-                # Combine velocity components
-                velocity_x_data = nc.variables['velocity_x'][:]
-                velocity_y_data = nc.variables['velocity_y'][:]
-                velocity_data = np.stack([velocity_x_data, velocity_y_data], axis=-1)
+                # Velocity already has last dimension = 2
+                velocity_data = nc.groups['t1_fields'].variables['velocity'][:, :n_timesteps, :, :, :]
                 
-                # Combine C tensor components
-                c_xx_data = nc.variables['C_xx'][:]
-                c_xy_data = nc.variables['C_xy'][:]
-                c_yx_data = nc.variables['C_yx'][:]
-                c_yy_data = nc.variables['C_yy'][:]
-                c_tensor_data = np.stack([c_xx_data, c_xy_data, c_yx_data, c_yy_data], axis=-1)
+                # C is (sample, time, y, x, 2, 2) -> slice time and flatten last two dims to 4
+                c_full = nc.groups['t2_fields'].variables['C'][:, :n_timesteps, :, :, :, :]
+                c_tensor_data = c_full.reshape(c_full.shape[:-2] + (4,))
                 
                 # Write to output file
                 start_idx = samples[i]
