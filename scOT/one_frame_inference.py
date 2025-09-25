@@ -6,23 +6,24 @@ import torch.nn.functional as F
 
 from scOT.model import ScOT
 from scOT.problems.base import get_dataset
+from scOT.eval_losses import VRMSE
 
-def _batch_vrmse(prediction: torch.Tensor, target: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
+def _batch_vrmse(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    eps: float = 1e-7,
+    reduce_dims: tuple[int, ...] | None = None,  # None -> all non-batch dims
+    unbiased: bool = True,
+) -> torch.Tensor:
     """
-    Compute VRMSE per sample, then average over the batch.
-
-    VRMSE = sqrt(MSE(pred, target)) / (std(target) + eps),
-    where MSE/std are computed over all non-batch dimensions.
+    Compute VRMSE per-sample using the self-contained Well-equivalent implementation,
+    then average across the batch.
     """
-    # Flatten non-batch dims
-    B = target.shape[0]
-    pred_flat = prediction.reshape(B, -1)
-    tgt_flat  = target.reshape(B, -1)
+    vrmse_per_sample = VRMSE.eval(prediction, target, eps=eps, reduce_dims=reduce_dims, unbiased=unbiased)
+    while vrmse_per_sample.ndim > 1:
+        vrmse_per_sample = vrmse_per_sample.mean(dim=-1)
+    return vrmse_per_sample.mean()
 
-    rmse_per = torch.sqrt(torch.mean((pred_flat - tgt_flat) ** 2, dim=1))
-    std_per  = torch.std(tgt_flat, dim=1, unbiased=False)
-    vrmse_per = rmse_per / (std_per + eps)
-    return vrmse_per.mean()
 
 def evaluate_l1_and_vrmse(args):
     """
