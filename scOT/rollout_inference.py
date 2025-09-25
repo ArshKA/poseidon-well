@@ -2,18 +2,16 @@ import torch
 import argparse
 from tqdm import tqdm
 import torch.nn.functional as F
+import json 
+import os   
 
-# Make sure these imports point to your project structure
 from scOT.model import ScOT
 from scOT.problems.base import get_dataset
 from scOT.one_frame_inference import _batch_vrmse
 
 
 def evaluate_l1_and_vrmse(args):
-    """
-    Loads a model and dataset, then calculates rollout errors starting ONLY from
-    the beginning (t=0) of each sequence in a batched and efficient manner.
-    """
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -35,7 +33,6 @@ def evaluate_l1_and_vrmse(args):
         **dataset_kwargs
     )
 
-    # Dataloader is set to shuffle=False to make index calculation reliable
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -47,10 +44,8 @@ def evaluate_l1_and_vrmse(args):
     rollout_steps = args.rollout_end_frame - args.rollout_start_frame
     if rollout_steps <= 0:
         raise ValueError("rollout_end_frame must be greater than rollout_start_frame.")
-
-    total_l1_loss = 0.0
-    total_vrmse = 0.0
-    steps_evaluated = 0
+    
+    per_frame_metrics = {}
 
     print(f"Starting evaluation for t=0 rollouts from frame {args.rollout_start_frame} to {args.rollout_end_frame}...")
     with torch.no_grad():
@@ -64,15 +59,21 @@ def evaluate_l1_and_vrmse(args):
             initial_frames = batch["pixel_values"][is_start_of_sequence]
             initial_times = batch["time"][is_start_of_sequence]
             
-            current_batch_size = batch["pixel_values"].shape[0]
-            start_index = i * args.batch_size
-            original_indices = torch.arange(start_index, start_index + current_batch_size)
-            valid_indices = original_indices[is_start_of_sequence]
-
+            num_valid_samples_in_batch = initial_frames.shape[0] 
             
-            ar_steps_list = [1] * (args.rollout_end_frame)
+            if num_valid_samples_in_batch == 0: # Double-check, should be caught by .any() above
+                continue
+
+            current_dataloader_batch_size = batch["pixel_values"].shape[0] # Original batch size from dataloader
+            start_index_in_dataset = i * args.batch_size # Base index for the dataloader batch
+            
+            original_indices_in_batch = torch.arange(start_index_in_dataset, start_index_in_dataset + current_dataloader_batch_size)
+            valid_indices_for_gt = original_indices_in_batch[is_start_of_sequence]
+
+            ar_steps_list = [1] * args.rollout_end_frame 
+            
             all_ground_truth_rollouts = []
-            for sample_idx in valid_indices:
+            for sample_idx in valid_indices_for_gt:
                 single_rollout = dataset.get_ground_truth_for_rollout(sample_idx.item(), ar_steps_list)
                 all_ground_truth_rollouts.append(single_rollout)
             
@@ -85,7 +86,8 @@ def evaluate_l1_and_vrmse(args):
                 
                 prediction = model(pixel_values=current_frame, time=time_tensor).output
 
-                if (step + 1) >= args.rollout_start_frame:
+                metric_frame_index = step + 1 
+                if metric_frame_index >= args.rollout_start_frame:
                     ground_truth = ground_truth_rollout[:, step]
                     
                     if hasattr(dataset, 'remove_padding'):
@@ -95,29 +97,67 @@ def evaluate_l1_and_vrmse(args):
                         prediction_unpadded = prediction
                         ground_truth_unpadded = ground_truth
                     
-                    l1_loss = F.l1_loss(prediction_unpadded, ground_truth_unpadded)
-                    vrmse = _batch_vrmse(prediction_unpadded, ground_truth_unpadded)
+                    l1_loss_batch_mean = F.l1_loss(prediction_unpadded, ground_truth_unpadded).item()
+                    vrmse_batch_mean = _batch_vrmse(prediction_unpadded, ground_truth_unpadded).item()
 
-                    total_l1_loss += l1_loss.item()
-                    total_vrmse += vrmse.item()
-                    steps_evaluated += 1
+                    if metric_frame_index not in per_frame_metrics:
+                        per_frame_metrics[metric_frame_index] = {'l1_sum': 0.0, 'vrmse_sum': 0.0, 'num_batches_contributed': 0}
+                    
+                    per_frame_metrics[metric_frame_index]['l1_sum'] += l1_loss_batch_mean
+                    per_frame_metrics[metric_frame_index]['vrmse_sum'] += vrmse_batch_mean
+                    per_frame_metrics[metric_frame_index]['num_batches_contributed'] += 1
 
                 current_frame = prediction
     
-    mean_l1 = total_l1_loss / steps_evaluated if steps_evaluated > 0 else 0
-    mean_vrmse = total_vrmse / steps_evaluated if steps_evaluated > 0 else 0
+    final_metrics_to_save = {}
     
+    overall_l1_sum = 0.0
+    overall_vrmse_sum = 0.0
+    overall_steps_evaluated_count = 0 # Counts how many frame indices actually contributed metrics
+
+    for frame_idx in range(args.rollout_start_frame, args.rollout_end_frame + 1):
+        if frame_idx in per_frame_metrics and per_frame_metrics[frame_idx]['num_batches_contributed'] > 0:
+            data = per_frame_metrics[frame_idx]
+            mean_l1_for_frame = data['l1_sum'] / data['num_batches_contributed']
+            mean_vrmse_for_frame = data['vrmse_sum'] / data['num_batches_contributed']
+            
+            final_metrics_to_save[f"frame_{frame_idx}"] = {
+                "mean_l1": mean_l1_for_frame,
+                "mean_vrmse": mean_vrmse_for_frame
+            }
+            
+            overall_l1_sum += mean_l1_for_frame
+            overall_vrmse_sum += mean_vrmse_for_frame
+            overall_steps_evaluated_count += 1 # Count of frames that actually contributed metrics
+
+        else:
+            final_metrics_to_save[f"frame_{frame_idx}"] = {
+                "mean_l1": 0.0, 
+                "mean_vrmse": 0.0
+            }
+
+
+    overall_mean_l1 = overall_l1_sum / overall_steps_evaluated_count if overall_steps_evaluated_count > 0 else 0
+    overall_mean_vrmse = overall_vrmse_sum / overall_steps_evaluated_count if overall_steps_evaluated_count > 0 else 0
+
+
     print("\n" + "="*30)
     print("Evaluation Complete")
     print(f"Rollout Range: {args.rollout_start_frame} -> {args.rollout_end_frame}")
-    print(f"Mean L1 Loss: {mean_l1:.8f}")
-    print(f"Mean VRMSE  : {mean_vrmse:.8f}")
+    print(f"Overall Mean L1 Loss: {overall_mean_l1:.8f}")
+    print(f"Overall Mean VRMSE  : {overall_mean_vrmse:.8f}")
     print("="*30)
+
+
+    if args.output_path:
+        with open(args.output_path, 'w') as f:
+            json.dump(final_metrics_to_save, f, indent=4)
+        print(f"Per-frame metrics saved to: {args.output_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="A script to calculate rollout errors from the start of each sequence."
+        description="A script to calculate rollout errors from the start of each sequence and save per-frame metrics."
     )
     parser.add_argument("--model_path", type=str, required=True, help="Path to the pretrained model checkpoint.")
     parser.add_argument("--data_path", type=str, required=True, help="Path to the root of the dataset.")
@@ -126,6 +166,8 @@ if __name__ == "__main__":
     
     parser.add_argument("--rollout_start_frame", type=int, required=True, help="The starting frame of the rollout to calculate error (inclusive).")
     parser.add_argument("--rollout_end_frame", type=int, required=True, help="The ending frame of the rollout to calculate error (inclusive).")
+    parser.add_argument("--output_path", type=str, default=None, help="Optional: Path to save the per-frame metrics JSON file. E.g., 'results/rollout_metrics.json'")
+
 
     args = parser.parse_args()
     evaluate_l1_and_vrmse(args)
